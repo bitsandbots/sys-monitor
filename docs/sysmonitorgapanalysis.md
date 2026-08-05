@@ -29,16 +29,17 @@
 
 | # | Finding | Impact | Where |
 |---|---|---|---|
-| 1 | **`services.json` is unconditionally overwritten on every `update.sh` run**, clobbering any services a user added via the web UI back to release defaults — no backup, no no-clobber guard. This is a real data-loss bug, not a theoretical one. | High | `install.sh:182` |
-| 2 | **Hub poller can silently die under load.** `_poller_loop()` wraps only `f.result()` in try/except, not the `as_completed(..., timeout=10)` iterator itself. Since each node poll makes up to 4 sequential calls at a 4s default timeout, one slow node can blow the 10s window, raising an uncaught `TimeoutError` that kills the poller thread — with no watchdog to restart it. Dashboard data goes stale until a full Hub restart. | High | `hub/sys_monitor_hub.py:240-254` |
-| 3 | Poller concurrency is hard-capped at `min(len(node_ids), 8)` regardless of fleet size — a 50+ node fleet takes multiple sequential batches per cycle, so data staleness (and the crash risk above) gets worse exactly as the fleet scales, which is the Hub's core use case. | High | `hub/sys_monitor_hub.py:247` |
-| 4 | No resource limits (`MemoryMax`, `CPUQuota`, `TasksMax`) on either systemd unit — on a 1-4GB Pi, a leak or a heavy static scan has nothing capping it from OOMing the whole board. | Medium | both `.service` files |
-| 5 | Event log is in-memory only (`LOG_MAX = 200`), never written to stdout/journal — a crash loses all operational history; there's nothing for post-mortem debugging beyond the one-time startup banner. | Medium | `sys_monitor.py:1357-1368` |
-| 6 | Flask dev server (Werkzeug) runs directly in production, no gunicorn/waitress, no `threaded=True` — requests serialize under load, worst on the Hub's own per-node AJAX fan-out. | Medium | both `app.run()` calls |
-| 7 | Decommissioned nodes are never cleaned up — no TTL/staleness pruning exists; only a manual DELETE removes a node, so a churning fleet accumulates dead entries forever. | Low-Medium | `hub/sys_monitor_hub.py` (no TTL logic) |
-| 8 | No startup config validation — an empty-string token silently disables auth with no persistent warning; an invalid `HIDDENSCOPE_MIN_SEVERITY` silently falls back to the most permissive threshold ("info") rather than erroring. | Low-Medium | `sys_monitor.py:209`, `hiddenscope_scanner.py:120-121` |
-| 9 | `update.sh` has no rollback: if `pip3 install` fails mid-update, the old process keeps running from now-stale-on-disk code, then crash-loops on next restart. No snapshot of `$INSTALL_DIR` is taken before overwrite. | Medium | `update.sh:190-191`, `install.sh:171-192` |
-| 10 | Only liveness signal is unauthenticated `/api/ping` — fine for a basic uptime check, but no deeper `/healthz` (e.g. "is the poller thread alive," which would have caught #2 automatically). | Low | `sys_monitor.py:1384-1387` |
+| 1 | **Hub poller can silently die under load.** `_poller_loop()` wraps only `f.result()` in try/except, not the `as_completed(..., timeout=10)` iterator itself. Since each node poll makes up to 4 sequential calls at a 4s default timeout, one slow node can blow the 10s window, raising an uncaught `TimeoutError` that kills the poller thread — with no watchdog to restart it. Dashboard data goes stale until a full Hub restart. | High | `hub/sys_monitor_hub.py:240-254` |
+| 2 | Poller concurrency is hard-capped at `min(len(node_ids), 8)` regardless of fleet size — a 50+ node fleet takes multiple sequential batches per cycle, so data staleness (and the crash risk above) gets worse exactly as the fleet scales, which is the Hub's core use case. | High | `hub/sys_monitor_hub.py:247` |
+| 3 | No resource limits (`MemoryMax`, `CPUQuota`, `TasksMax`) on either systemd unit — on a 1-4GB Pi, a leak or a heavy static scan has nothing capping it from OOMing the whole board. | Medium | both `.service` files |
+| 4 | Event log is in-memory only (`LOG_MAX = 200`), never written to stdout/journal — a crash loses all operational history; there's nothing for post-mortem debugging beyond the one-time startup banner. | Medium | `sys_monitor.py:1357-1368` |
+| 5 | Flask dev server (Werkzeug) runs directly in production, no gunicorn/waitress, no `threaded=True` — requests serialize under load, worst on the Hub's own per-node AJAX fan-out. | Medium | both `app.run()` calls |
+| 6 | Decommissioned nodes are never cleaned up — no TTL/staleness pruning exists; only a manual DELETE removes a node, so a churning fleet accumulates dead entries forever. | Low-Medium | `hub/sys_monitor_hub.py` (no TTL logic) |
+| 7 | No startup config validation — an empty-string token silently disables auth with no persistent warning; an invalid `HIDDENSCOPE_MIN_SEVERITY` silently falls back to the most permissive threshold ("info") rather than erroring. | Low-Medium | `sys_monitor.py:209`, `hiddenscope_scanner.py:120-121` |
+| 8 | `update.sh` has no rollback: if `pip3 install` fails mid-update, the old process keeps running from now-stale-on-disk code, then crash-loops on next restart. No snapshot of `$INSTALL_DIR` is taken before overwrite. | Medium | `update.sh:190-191`, `install.sh:171-192` |
+| 9 | Only liveness signal is unauthenticated `/api/ping` — fine for a basic uptime check, but no deeper `/healthz` (e.g. "is the poller thread alive," which would have caught #1 automatically). | Low | `sys_monitor.py:1384-1387` |
+
+**Verified fixed, not a gap:** an earlier pass of this analysis flagged `services.json` as unconditionally overwritten on every `update.sh` run. Re-checked against the current tree — `install.sh:228` guards the default-seed copy with `[[ -f "$INSTALL_DIR/services.json" ]] ||`, and the legacy-migration copy at `install.sh:197-200` has the same guard. `update.sh` never touches the file directly; it only invokes `install.sh`. No overwrite path exists in the current code.
 
 ## 3. Feature gaps vs. mature monitoring platforms
 
@@ -72,6 +73,8 @@ Concrete gaps, roughly ordered by risk if left uncovered:
 
 **Rough total to reach baseline coverage** (core parsing/detection unit tests + a CI gate): ~6-9 developer-days. Frontend/JS testing and full Hub integration tests are separable follow-on work.
 
+Two planning docs already exist in the repo and should be the starting point rather than scoping this from scratch: `docs/TESTING_STRATEGY_TEMPLATE-v2.md` and `docs/blueprint-testing-prompts-v2.md`.
+
 ## 5. Code quality & maintainability
 
 - **No linter/formatter/type-checker config anywhere** (no `.flake8`, `pyproject.toml`, `.eslintrc`, `mypy.ini`) — nothing enforces style or catches regressions automatically.
@@ -96,30 +99,29 @@ The recent docs/wiki update for the hiddenscope integration is largely accurate 
 **P0 — fix before this runs anywhere beyond a fully trusted home LAN:**
 1. Add authentication enforcement to the Hub (mirror `sys_monitor.py`'s `require_auth` pattern across all Hub routes).
 2. Add CSRF protection (SameSite cookies / custom header requirement / Origin check) so state-changing routes aren't exploitable via a plain form POST when no token is configured — or make an empty token a documented "read-only demo mode" instead of full control.
-3. Fix `install.sh`/`update.sh` clobbering `services.json` on update (back up before overwrite, or skip if the target already exists and differs from the shipped default).
-4. Fix the Hub poller's uncaught `TimeoutError` (wrap the `as_completed` iterator, add a watchdog that restarts the poller thread if it dies).
+3. Fix the Hub poller's uncaught `TimeoutError` (wrap the `as_completed` iterator, add a watchdog that restarts the poller thread if it dies).
 
 **P1 — high-value, moderate effort:**
-5. Correct the `/api/security/allowlist` docs (trivial).
-6. Constrain the self-extensible service allowlist (e.g. require a separate, more-privileged action to add new services vs. control existing ones).
-7. Stand up a minimal test suite + CI gate for `/proc` parsing, LLM detection, and hiddenscope glue (items 1-3, 6-7 from Section 4) — this is the highest-leverage single investment, since it would have caught both the poller bug and the docs mismatch automatically.
-8. Add basic outbound alerting (webhook at minimum) so alerts aren't limited to "someone has the tab open."
-9. Scale the Hub's poller concurrency with fleet size, or convert to an async/streaming model instead of a fixed 8-worker cap.
+4. Correct the `/api/security/allowlist` docs (trivial).
+5. Constrain the self-extensible service allowlist (e.g. require a separate, more-privileged action to add new services vs. control existing ones).
+6. Stand up a minimal test suite + CI gate for `/proc` parsing, LLM detection, and hiddenscope glue (items 1-3, 6-7 from Section 4) — this is the highest-leverage single investment, since it would have caught both the poller bug and the docs mismatch automatically.
+7. Add basic outbound alerting (webhook at minimum) so alerts aren't limited to "someone has the tab open."
+8. Scale the Hub's poller concurrency with fleet size, or convert to an async/streaming model instead of a fixed 8-worker cap.
 
 **P2 — solid next-phase work:**
-10. Historical metrics persistence (even a lightweight sqlite ring buffer would unlock trend views).
-11. Rate limiting on power/kill/service-control endpoints.
-12. Resource limits + full systemd hardening on both units; drop the unnecessary `sudo reboot`/`sudo shutdown` shell-out now that the service already runs as root, which would let `NoNewPrivileges=true` be restored.
-13. Node TTL/pruning in the Hub.
-14. Disk I/O and network error-rate metrics (low effort, sysfs data is already one read away).
+9. Historical metrics persistence (even a lightweight sqlite ring buffer would unlock trend views).
+10. Rate limiting on power/kill/service-control endpoints.
+11. Resource limits + full systemd hardening on both units; drop the unnecessary `sudo reboot`/`sudo shutdown` shell-out now that the service already runs as root, which would let `NoNewPrivileges=true` be restored.
+12. Node TTL/pruning in the Hub.
+13. Disk I/O and network error-rate metrics (low effort, sysfs data is already one read away).
 
 **P3 — larger roadmap items, scope when there's demand:**
-15. Container/Docker monitoring.
-16. GPU monitoring (nvidia-smi/rocm-smi) for LLM-host nodes.
-17. Multi-user/RBAC auth.
-18. mDNS/Avahi-based discovery.
-19. Shared CSS/JS between `index.html` and `hub.html`, and a longer-term look at whether the single-file-no-build-step approach still fits at current size.
+14. Container/Docker monitoring.
+15. GPU monitoring (nvidia-smi/rocm-smi) for LLM-host nodes.
+16. Multi-user/RBAC auth.
+17. mDNS/Avahi-based discovery.
+18. Shared CSS/JS between `index.html` and `hub.html`, and a longer-term look at whether the single-file-no-build-step approach still fits at current size.
 
 ---
 
-*This analysis is based on static code reading, not a penetration test or load test — treat severity ratings as directional. Six parallel review passes were run against the current codebase at /tmp/work/unified/sys-monitor/; each finding above cites the specific file/function it was verified against.*
+*This analysis is based on static code reading, not a penetration test or load test — treat severity ratings as directional. Six parallel review passes were run against the codebase at /tmp/work/unified/sys-monitor/; each finding above cites the specific file/function it was verified against. That checkout can drift from the `sys-monitor` repo itself — one finding in an earlier version of this doc (a `services.json` overwrite bug) turned out to already be fixed here. Re-diff findings against current HEAD before treating this backlog as final; a 2026-08-05 pass re-verified every P0/P1 item and the Section 6 docs mismatch directly against this repo and confirmed them accurate, with that one correction applied.*
