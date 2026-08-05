@@ -493,12 +493,6 @@ body {
         <div id="security-alert-msg" style="color:var(--text-secondary);font-size:12px"></div>
       </div>
 
-      <!-- LLM Models card — only shown when a local model server is detected serving something -->
-      <div class="card" id="llm-card" style="--accent-color:var(--purple);display:none">
-        <div class="card-hdr">🧠 LLM Models <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="llm-count"></span></div>
-        <div id="llm-summary"></div>
-      </div>
-
       <div class="gauges">
         <div class="card gauge-card" style="--accent-color:var(--blue)"><svg id="g-cpu" width="84" height="84"></svg><span class="gauge-label">CPU</span></div>
         <div class="card gauge-card" style="--accent-color:var(--green)"><svg id="g-temp" width="84" height="84"></svg><span class="gauge-label">Temp</span></div>
@@ -523,6 +517,12 @@ body {
       <div class="card" style="--accent-color:var(--cyan)">
         <div class="card-hdr">Network</div>
         <div style="display:flex;justify-content:space-around" id="net-quick"></div>
+      </div>
+
+      <!-- LLM Models card — only shown when a local model server is detected serving something -->
+      <div class="card" id="llm-card" style="--accent-color:var(--purple);display:none">
+        <div class="card-hdr">🧠 LLM Models <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="llm-count"></span></div>
+        <div id="llm-summary"></div>
       </div>
     </div>
 
