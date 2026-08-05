@@ -20,6 +20,7 @@ import re
 import socket
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from ipaddress import IPv4Network
@@ -242,15 +243,22 @@ def _poller_loop():
     global _poller_running
     _poller_running = True
     while _poller_running:
-        node_ids = list(_get_all_nodes().keys())
-        if node_ids:
-            with ThreadPoolExecutor(max_workers=min(len(node_ids), 8)) as pool:
-                futures = {pool.submit(_poll_node, nid): nid for nid in node_ids}
-                for f in as_completed(futures, timeout=10):
-                    try:
-                        f.result()
-                    except Exception:
-                        pass
+        try:
+            node_ids = list(_get_all_nodes().keys())
+            if node_ids:
+                with ThreadPoolExecutor(max_workers=min(len(node_ids), 8)) as pool:
+                    futures = {pool.submit(_poll_node, nid): nid for nid in node_ids}
+                    for f in as_completed(futures, timeout=10):
+                        try:
+                            f.result()
+                        except Exception:
+                            pass
+        except Exception:
+            # A slow node can blow the as_completed timeout above (raising
+            # TimeoutError from the iterator itself, not from f.result()).
+            # Catch broadly here so one bad cycle never kills this daemon
+            # thread — there's no supervisor to restart it otherwise.
+            traceback.print_exc()
         time.sleep(HUB_CONFIG["poll_interval"])
 
 
