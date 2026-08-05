@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SysMonitor Hub — Fleet Management Console</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230b1220'/><path d='M8 20c0-5 3.5-10 8-10s8 5 8 10z' fill='%232b7de9' opacity='0.85'/><path d='M6 20h20v2a2 2 0 01-2 2H8a2 2 0 01-2-2z' fill='%23e07018'/><path d='M13 14c.5-2 1.5-3 3-3s2.5 1 3 3' fill='none' stroke='white' stroke-width='1.2' opacity='0.4'/></svg>">
+<style>
+@font-face { font-family:"Exo 2"; src:url("/static/fonts/exo-2-latin-700-normal.woff2") format("woff2"); font-weight:700; font-display:swap; }
+@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
+@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-600-normal.woff2") format("woff2"); font-weight:600; font-display:swap; }
+@font-face { font-family:"IBM Plex Mono"; src:url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
+</style>
+<style>
+/* === CoreConduit Design Tokens — Dark Monitor === */
+:root {
+  --bg-deep: #070d19;
+  --bg-primary: #0b1220;
+  --bg-card: #0f1a2e;
+  --bg-card-hover: #152240;
+  --bg-topbar: #0b1220;
+  --border: #1c2d52;
+  --border-light: #243660;
+  --text-primary: #eaecf0;
+  --text-secondary: #bfc4cc;
+  --text-muted: #636a76;
+  --text-label: #969daa;
+  --blue: #2b7de9;
+  --blue-dim: #1b5fb8;
+  --blue-glow: rgba(43, 125, 233, 0.25);
+  --orange: #e07018;
+  --orange-dim: #c55d0a;
+  --orange-glow: rgba(224, 112, 24, 0.2);
+  --green: #1a9a4a;
+  --green-glow: rgba(26, 154, 74, 0.3);
+  --red: #d43030;
+  --cyan: #3aaccc;
+  --warning: #c08a15;
+  --font-display: 'Exo 2', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-card: 0 2px 8px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.2);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg-deep);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: #1c2d52; border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* === Topbar === */
+.topbar {
+  background: var(--bg-topbar);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+.topbar-brand { display: flex; align-items: center; gap: 14px; }
+.topbar-pie {
+  width: 38px; height: 38px;
+  animation: piePulse 5s ease-in-out infinite;
+}
+@keyframes piePulse {
+  0%,100% { filter: drop-shadow(0 0 3px var(--blue-glow)); }
+  50% { filter: drop-shadow(0 0 10px var(--blue-glow)); }
+}
+.topbar-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 18px;
+  letter-spacing: 1px;
+}
+.topbar-title .t-sys { color: var(--text-primary); }
+.topbar-title .t-monitor { color: var(--orange); }
+.topbar-title .t-hub { color: var(--text-label); font-weight: 500; margin-left: 6px; font-size: 14px; }
+.topbar-sub {
+  font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);
+  letter-spacing: 0.6px; margin-top: 2px;
+}
+.topbar-right { display: flex; align-items: center; gap: 16px; }
+.fleet-stat {
+  font-size: 13px; font-family: var(--font-mono); color: var(--text-muted);
+  display: flex; align-items: center; gap: 6px;
+}
+.fleet-stat .num { color: var(--blue); font-weight: 600; font-size: 16px; }
+.fleet-stat .num.warn { color: var(--orange); }
+
+/* === Nav Bar === */
+.nav-bar {
+  display: flex; gap: 0; padding: 0 16px;
+  background: #080e1a; border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.nav-btn {
+  padding: 12px 20px; background: transparent; border: none;
+  border-bottom: 3px solid transparent; color: var(--text-muted);
+  font-size: 13px; font-family: var(--font-mono); font-weight: 500;
+  cursor: pointer; letter-spacing: 0.5px; white-space: nowrap;
+  transition: all 0.2s; display: flex; align-items: center; gap: 8px;
+}
+.nav-btn:hover { color: var(--text-label); }
+.nav-btn.active {
+  background: rgba(43, 125, 233, 0.06);
+  border-bottom-color: var(--blue); color: var(--blue);
+}
+.nav-icon { font-size: 15px; }
+
+/* === Content === */
+.content { padding: 20px 20px 80px; max-width: 1200px; margin: 0 auto; }
+.view { display: none; }
+.view.active { display: block; }
+
+/* === Section Headings === */
+.section-hdr {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 18px;
+}
+.section-title {
+  font-family: var(--font-display); font-size: 18px; font-weight: 700;
+  color: var(--text-primary); letter-spacing: 0.5px;
+}
+.section-sub {
+  font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);
+  letter-spacing: 0.4px; margin-top: 3px;
+}
+
+/* === Cards === */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 16px 18px; margin-bottom: 12px;
+  position: relative; overflow: hidden;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.2s, background 0.2s;
+}
+.card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--accent, var(--blue-dim)), var(--accent-end, var(--orange-dim)));
+}
+
+/* === Fleet Summary Bar === */
+.fleet-bar {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
+  margin-bottom: 18px;
+}
+.fleet-metric { text-align: center; padding: 14px 10px !important; }
+.fleet-metric .fm-val {
+  font-size: 26px; font-weight: 700; font-family: var(--font-mono);
+  color: var(--text-primary); line-height: 1;
+}
+.fleet-metric .fm-unit { font-size: 12px; color: var(--text-muted); }
+.fleet-metric .fm-label {
+  font-size: 11px; color: var(--text-label); font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: 1px; margin-top: 6px;
+}
+
+/* === Node Grid === */
+.node-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 12px;
+}
+.node-card {
+  cursor: pointer; transition: all 0.2s;
+  --accent: var(--blue-dim); --accent-end: var(--orange-dim);
+}
+.node-card:hover { border-color: var(--blue-dim); background: var(--bg-card-hover); }
+.node-card.offline {
+  opacity: 0.5;
+  --accent: var(--border); --accent-end: var(--border);
+}
+.node-card.offline:hover { opacity: 0.7; }
+.node-hdr {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 12px;
+}
+.node-name {
+  font-family: var(--font-display); font-weight: 700; font-size: 16px;
+  color: var(--text-primary); letter-spacing: 0.3px;
+}
+.node-model {
+  font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);
+  margin-top: 2px;
+}
+.node-pi-badge {
+  display: inline-block; font-size: 9px; font-family: var(--font-mono);
+  background: rgba(34,211,238,0.12); color: var(--cyan, #22d3ee);
+  border: 1px solid rgba(34,211,238,0.3); border-radius: 8px;
+  padding: 1px 6px; vertical-align: middle;
+}
+.node-llm-badge {
+  font-size: 10px; font-family: var(--font-mono); color: #a855f7;
+  background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.25);
+  border-radius: 6px; padding: 3px 8px; margin: 6px 0; display: inline-block;
+}
+.node-security-badge {
+  font-size: 10px; font-family: var(--font-mono); color: var(--red, #ef4444);
+  background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
+  border-radius: 6px; padding: 3px 8px; margin: 6px 4px 6px 0; display: inline-block;
+}
+.node-status-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 4px;
+}
+.node-status-dot.on { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+.node-status-dot.off { background: #3a3a3a; }
+.node-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.node-metric {
+  text-align: center; padding: 8px 6px;
+  background: rgba(0,0,0,0.25); border-radius: var(--radius-sm);
+}
+.nm-val {
+  font-size: 18px; font-weight: 600; font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+.nm-label {
+  font-size: 10px; color: var(--text-muted); font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: 0.8px; margin-top: 3px;
+}
+.node-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid #0f1a2e;
+  font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);
+}
+.node-actions { display: flex; gap: 5px; }
+.node-action-btn {
+  padding: 4px 10px; border-radius: var(--radius-sm); font-size: 11px;
+  font-family: var(--font-mono); cursor: pointer; border: 1px solid;
+  background: transparent; transition: all 0.15s;
+}
+.node-action-btn:active { transform: scale(0.92); }
+.node-action-btn.remove { color: #8a3030; border-color: #3a1818; }
+.node-action-btn.remove:hover { background: #2a1414; color: var(--red); }
+.node-action-btn.view-btn { color: var(--blue-dim); border-color: #1c2d52; }
+.node-action-btn.view-btn:hover { background: #0f1a2e; color: var(--blue); }
+
+/* === Discovery === */
+.discover-controls {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.discover-input {
+  padding: 10px 14px; border-radius: var(--radius-sm); font-family: var(--font-mono);
+  font-size: 14px; background: #070d19; color: var(--text-primary);
+  border: 1px solid var(--border); outline: none; min-width: 200px;
+}
+.discover-input:focus { border-color: var(--blue-dim); box-shadow: 0 0 0 2px rgba(43,125,233,0.15); }
+.discover-input::placeholder { color: var(--text-muted); }
+.discover-btn {
+  padding: 10px 20px; border-radius: var(--radius-sm); font-family: var(--font-mono);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--blue-dim);
+  background: linear-gradient(135deg, rgba(43,125,233,0.1), rgba(43,125,233,0.05));
+  color: var(--blue); letter-spacing: 0.4px; transition: all 0.15s;
+}
+.discover-btn:hover { background: rgba(43,125,233,0.15); }
+.discover-btn:active { transform: scale(0.96); }
+.discover-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.discover-status {
+  font-size: 13px; font-family: var(--font-mono); color: var(--text-muted);
+  margin-top: 12px; min-height: 20px;
+}
+.discover-results { margin-top: 14px; }
+.found-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; flex-wrap: wrap;
+}
+.found-info { flex: 1; min-width: 150px; }
+.found-host { font-family: var(--font-mono); font-size: 14px; color: var(--text-primary); font-weight: 500; }
+.found-detail { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.found-add-btn {
+  padding: 6px 14px; border-radius: var(--radius-sm); font-size: 12px;
+  font-family: var(--font-mono); font-weight: 500; cursor: pointer;
+  background: rgba(26,154,74,0.08); color: var(--green); border: 1px solid rgba(26,154,74,0.3);
+  transition: all 0.15s;
+}
+.found-add-btn:active { transform: scale(0.95); }
+.found-add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.found-registered {
+  font-size: 12px; font-family: var(--font-mono); color: var(--text-muted);
+  padding: 6px 12px;
+}
+
+/* === Add Node Form === */
+.add-form {
+  display: none; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 16px 18px; margin-bottom: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  position: relative; box-shadow: var(--shadow-card);
+}
+.add-form::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--blue), var(--orange));
+}
+.add-form.show { display: flex; }
+.add-form input { flex: 1; min-width: 130px; }
+.form-btn {
+  padding: 10px 14px; border-radius: var(--radius-sm); font-family: var(--font-mono);
+  font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid;
+  transition: all 0.15s;
+}
+.form-btn:active { transform: scale(0.95); }
+.form-btn.save { background: rgba(26,154,74,0.08); color: var(--green); border-color: rgba(26,154,74,0.3); }
+.form-btn.cancel { background: rgba(99,106,118,0.08); color: var(--text-muted); border-color: var(--border); }
+.add-toggle-btn {
+  padding: 10px 16px; border-radius: var(--radius-sm); font-family: var(--font-mono);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--blue-dim); background: transparent; color: var(--blue);
+  display: flex; align-items: center; gap: 6px; transition: all 0.15s;
+}
+.add-toggle-btn:hover { background: rgba(43,125,233,0.08); }
+
+/* === Detail View === */
+.detail-back {
+  padding: 8px 14px; border-radius: var(--radius-sm); font-family: var(--font-mono);
+  font-size: 13px; cursor: pointer; background: transparent;
+  color: var(--text-muted); border: 1px solid var(--border);
+  margin-bottom: 14px; transition: all 0.15s;
+}
+.detail-back:hover { color: var(--blue); border-color: var(--blue-dim); }
+.detail-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px;
+}
+.detail-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 20px;
+  color: var(--text-primary);
+}
+.detail-subtitle {
+  font-size: 13px; font-family: var(--font-mono); color: var(--text-muted);
+}
+.detail-tabs {
+  display: flex; gap: 1px; margin-bottom: 14px;
+  background: #080e1a; border-radius: var(--radius-md); overflow: hidden;
+  border: 1px solid var(--border);
+}
+.detail-tab {
+  padding: 10px 16px; background: transparent; border: none;
+  color: var(--text-muted); font-size: 13px; font-family: var(--font-mono);
+  cursor: pointer; transition: all 0.2s; letter-spacing: 0.4px;
+  flex: 1; text-align: center;
+}
+.detail-tab:hover { color: var(--text-label); }
+.detail-tab.active { background: var(--bg-card); color: var(--blue); }
+.detail-panel { display: none; }
+.detail-panel.active { display: block; }
+
+/* === Service items === */
+.svc-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; flex-wrap: wrap;
+}
+.svc-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.svc-dot.on { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+.svc-dot.off { background: #475569; }
+.svc-info { flex: 1; min-width: 130px; }
+.svc-name { font-family: var(--font-mono); font-size: 14px; color: var(--text-primary); font-weight: 500; }
+.svc-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.svc-badge {
+  font-size: 11px; font-family: var(--font-mono); padding: 3px 8px;
+  border-radius: 4px; letter-spacing: 0.4px;
+}
+.svc-badge.enabled { background: rgba(26,154,74,0.1); color: var(--green); }
+.svc-badge.disabled { background: rgba(99,106,118,0.1); color: var(--text-muted); }
+.svc-actions { display: flex; gap: 5px; margin-left: auto; }
+.svc-btn {
+  padding: 6px 12px; border-radius: var(--radius-sm); font-size: 12px;
+  font-family: var(--font-mono); font-weight: 500; cursor: pointer;
+  border: 1px solid; transition: all 0.15s;
+}
+.svc-btn:active { transform: scale(0.95); }
+.svc-btn.go   { background: rgba(26,154,74,0.06); color: var(--green); border-color: rgba(26,154,74,0.25); }
+.svc-btn.halt { background: rgba(212,48,48,0.06); color: var(--red); border-color: rgba(212,48,48,0.25); }
+.svc-btn.cyc  { background: rgba(224,112,24,0.06); color: var(--orange); border-color: rgba(224,112,24,0.25); }
+
+/* === Info Rows / Tables === */
+.info-row {
+  display: flex; justify-content: space-between; padding: 7px 0;
+  border-bottom: 1px solid #0f1a2e; font-size: 13px; font-family: var(--font-mono);
+}
+.info-key { color: var(--text-muted); }
+.info-val { color: var(--text-secondary); text-align: right; max-width: 60%; word-break: break-word; }
+.proc-tbl { width: 100%; border-collapse: collapse; font-size: 13px; font-family: var(--font-mono); }
+.proc-tbl th {
+  text-align: left; padding: 6px 8px; font-size: 11px; letter-spacing: 1px;
+  font-weight: 500; color: var(--text-muted); border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+}
+.proc-tbl td { padding: 7px 8px; color: var(--text-secondary); border-bottom: 1px solid #0f1a2e; }
+.proc-tbl .r { text-align: right; }
+.proc-tbl .cmd { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-label); font-size: 12px; }
+
+/* === Usage Bars === */
+.bar-wrap { margin-bottom: 10px; }
+.bar-meta { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; font-family: var(--font-mono); }
+.bar-meta .lbl { color: var(--text-secondary); }
+.bar-meta .val { color: var(--text-muted); }
+.bar-track { height: 7px; border-radius: 4px; background: #070d19; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 4px; transition: width 0.6s ease; }
+
+/* === Log Area === */
+.log-area {
+  background: #070d19; border-radius: var(--radius-sm); padding: 12px;
+  height: 320px; overflow-y: auto; font-family: var(--font-mono);
+  font-size: 13px; line-height: 1.8;
+}
+.log-ts { color: #1c2d52; }
+.log-info { color: var(--green); }
+.log-warning { color: var(--orange); }
+.log-error { color: var(--red); }
+.log-success { color: var(--cyan); }
+
+/* === Toast === */
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  padding: 10px 22px; border-radius: var(--radius-md); font-size: 14px;
+  font-family: var(--font-mono); z-index: 300;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  animation: toastIn 0.3s ease; display: none;
+}
+.toast.show { display: block; }
+.toast.success { background: #081a10; border: 1px solid rgba(26,154,74,0.3); color: var(--green); }
+.toast.warning { background: #1a1408; border: 1px solid rgba(192,138,21,0.3); color: var(--warning); }
+.toast.error   { background: #1a0c0c; border: 1px solid rgba(212,48,48,0.3); color: var(--red); }
+.toast.info    { background: #0b1428; border: 1px solid rgba(43,125,233,0.3); color: var(--blue); }
+@keyframes toastIn { from { opacity:0; transform:translate(-50%,10px) } to { opacity:1; transform:translate(-50%,0) } }
+
+/* === Modal === */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+  display: none; align-items: center; justify-content: center; z-index: 200;
+  backdrop-filter: blur(4px);
+}
+.modal-overlay.show { display: flex; }
+.modal-box {
+  background: var(--bg-card); border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg); padding: 32px; max-width: 400px;
+  width: 90%; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+.modal-icon { font-size: 36px; margin-bottom: 12px; }
+.modal-title { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; font-family: var(--font-display); }
+.modal-msg { font-size: 13px; color: var(--text-label); margin-bottom: 22px; line-height: 1.5; }
+.modal-btns { display: flex; gap: 12px; }
+.modal-btns button {
+  flex: 1; padding: 12px; border-radius: var(--radius-sm); font-family: var(--font-mono);
+  font-weight: 600; font-size: 13px; cursor: pointer;
+}
+.modal-cancel { background: rgba(99,106,118,0.1); border: 1px solid var(--border); color: var(--text-muted); }
+.modal-confirm { border: 1px solid; }
+
+/* === Empty State === */
+.empty-state {
+  text-align: center; padding: 70px 20px; color: var(--text-muted);
+}
+.empty-pie { margin-bottom: 18px; opacity: 0.3; }
+.empty-title {
+  font-family: var(--font-display); font-size: 20px; color: var(--text-label);
+  margin-bottom: 8px; letter-spacing: 0.5px;
+}
+.empty-sub { font-size: 14px; font-family: var(--font-mono); }
+
+/* === Scanning animation === */
+.scanning .discover-btn::after {
+  content: ''; display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--blue-dim); border-top-color: var(--blue);
+  border-radius: 50%; margin-left: 8px;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* === Footer === */
+.footer {
+  text-align: center; padding: 14px; font-size: 11px; color: var(--text-muted);
+  font-family: var(--font-mono); border-top: 1px solid #0f1a2e;
+  letter-spacing: 0.4px;
+}
+.footer a { color: var(--blue-dim); text-decoration: none; }
+.footer a:hover { color: var(--blue); }
+.footer .ft-sys { color: var(--text-label); }
+.footer .ft-monitor { color: var(--orange); }
+
+/* === Responsive === */
+@media (max-width: 520px) {
+  .fleet-bar { grid-template-columns: repeat(2, 1fr); }
+  .node-grid { grid-template-columns: 1fr; }
+  .topbar { padding: 10px 14px; }
+  .topbar-title { font-size: 16px; }
+  .content { padding: 14px 12px 60px; }
+  .discover-controls { flex-direction: column; }
+  .discover-input { width: 100%; min-width: 0; }
+  .detail-tabs { flex-wrap: wrap; }
+  .detail-tab { min-width: 70px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ========= TOPBAR ========= -->
+<div class="topbar">
+  <div class="topbar-brand">
+    <div class="topbar-pie">
+      <svg viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg">
+        <path d="M7 26c0-7 5-14 12-14s12 7 12 14z" fill="#2b7de9" opacity="0.8"/>
+        <path d="M5 26h28v3a3 3 0 01-3 3H8a3 3 0 01-3-3z" fill="#e07018"/>
+        <path d="M14 18c.8-3 2.5-5 5-5s4.2 2 5 5" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M12 22c1-2 3-3 7-3s6 1 7 3" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div>
+      <div class="topbar-title">
+        <span class="t-sys">Pi</span><span class="t-monitor">Monitor</span><span class="t-hub">Hub</span>
+      </div>
+      <div class="topbar-sub">Fleet Management Console Manager</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="fleet-stat"><span class="num" id="stat-online">0</span>/<span id="stat-total">0</span> online</div>
+  </div>
+</div>
+
+<!-- ========= NAV ========= -->
+<div class="nav-bar" id="nav-bar">
+  <button class="nav-btn active" data-view="fleet"><span class="nav-icon">&#9678;</span> The Kitchen</button>
+  <button class="nav-btn" data-view="discover"><span class="nav-icon">&#9673;</span> The Oven</button>
+  <button class="nav-btn" data-view="detail" id="nav-detail" style="display:none"><span class="nav-icon">&#9656;</span> <span id="nav-detail-label">Node</span></button>
+</div>
+
+<!-- ========= CONTENT ========= -->
+<div class="content">
+
+  <!-- == FLEET VIEW == -->
+  <div class="view active" id="view-fleet">
+    <div class="section-hdr">
+      <div>
+        <div class="section-title">The Kitchen</div>
+        <div class="section-sub">Every node in the bakery, monitored and ready to serve</div>
+      </div>
+      <button class="add-toggle-btn" onclick="toggleAddNode()">+ Add Node</button>
+    </div>
+
+    <div class="add-form" id="add-form">
+      <input class="discover-input" id="add-host" type="text" placeholder="host / IP address" spellcheck="false"
+        onkeydown="if(event.key==='Enter')addNode()">
+      <input class="discover-input" id="add-port" type="number" placeholder="8585" value="8585" style="max-width:90px">
+      <input class="discover-input" id="add-label" type="text" placeholder="label (optional)" spellcheck="false">
+      <button class="form-btn save" onclick="addNode()">Add</button>
+      <button class="form-btn cancel" onclick="toggleAddNode()">Cancel</button>
+    </div>
+
+    <!-- Fleet summary -->
+    <div class="fleet-bar" id="fleet-bar">
+      <div class="card fleet-metric" style="--accent:var(--blue);--accent-end:var(--blue-dim)">
+        <div class="fm-val" id="fm-nodes">&mdash;</div>
+        <div class="fm-label">Nodes</div>
+      </div>
+      <div class="card fleet-metric" style="--accent:var(--cyan);--accent-end:var(--blue)">
+        <div class="fm-val" id="fm-cpu">&mdash;<span class="fm-unit">%</span></div>
+        <div class="fm-label">Avg CPU</div>
+      </div>
+      <div class="card fleet-metric" style="--accent:var(--orange);--accent-end:var(--orange-dim)">
+        <div class="fm-val" id="fm-temp">&mdash;<span class="fm-unit">&deg;</span></div>
+        <div class="fm-label">Max Temp</div>
+      </div>
+      <div class="card fleet-metric" style="--accent:var(--green);--accent-end:var(--cyan)">
+        <div class="fm-val" id="fm-ram">&mdash;<span class="fm-unit">%</span></div>
+        <div class="fm-label">Avg RAM</div>
+      </div>
+      <div class="card fleet-metric" style="--accent:var(--red);--accent-end:#7f1d1d">
+        <div class="fm-val" id="fm-security">&mdash;</div>
+        <div class="fm-label">Security Alerts</div>
+      </div>
+    </div>
+
+    <div class="node-grid" id="node-grid"></div>
+  </div>
+
+  <!-- == DISCOVERY VIEW == -->
+  <div class="view" id="view-discover">
+    <div class="section-hdr">
+      <div>
+        <div class="section-title">The Oven</div>
+        <div class="section-sub">Scan the network for fresh SysMonitor instances ready to join the bakery</div>
+      </div>
+    </div>
+    <div class="card" style="--accent:var(--blue);--accent-end:var(--orange)">
+      <div class="discover-controls" id="discover-ctl">
+        <input class="discover-input" id="discover-subnet" type="text" placeholder="{{ local_ip | replace(local_ip.split('.')[-1], '0/24') }}" spellcheck="false">
+        <input class="discover-input" id="discover-port" type="number" placeholder="8585" value="8585" style="max-width:90px">
+        <button class="discover-btn" id="discover-go" onclick="runDiscovery()">Scan Subnet</button>
+      </div>
+      <div class="discover-status" id="discover-status"></div>
+    </div>
+    <div class="discover-results" id="discover-results"></div>
+  </div>
+
+  <!-- == DETAIL VIEW == -->
+  <div class="view" id="view-detail">
+    <button class="detail-back" onclick="showView('fleet')">&larr; Back to Kitchen</button>
+    <div class="detail-header">
+      <div>
+        <div class="detail-title" id="detail-title">&mdash;</div>
+        <div class="detail-subtitle" id="detail-subtitle">&mdash;</div>
+      </div>
+      <div id="detail-status-dot" class="node-status-dot off"></div>
+    </div>
+    <div class="detail-tabs" id="detail-tabs">
+      <button class="detail-tab active" data-dtab="info" onclick="switchDetailTab('info')">Info</button>
+      <button class="detail-tab" data-dtab="services" onclick="switchDetailTab('services')">Services</button>
+      <button class="detail-tab" data-dtab="processes" onclick="switchDetailTab('processes')">Processes</button>
+      <button class="detail-tab" data-dtab="storage" onclick="switchDetailTab('storage')">Storage</button>
+      <button class="detail-tab" data-dtab="logs" onclick="switchDetailTab('logs')">Logs</button>
+    </div>
+    <div class="detail-panel active" id="dpanel-info"><div id="detail-info-content"></div></div>
+    <div class="detail-panel" id="dpanel-services"><div id="detail-svc-content"></div></div>
+    <div class="detail-panel" id="dpanel-processes"><div id="detail-proc-content"></div></div>
+    <div class="detail-panel" id="dpanel-storage"><div id="detail-storage-content"></div></div>
+    <div class="detail-panel" id="dpanel-logs"><div id="detail-logs-content"></div></div>
+  </div>
+
+</div>
+
+<div class="footer"><span class="ft-sys">Sys</span><span class="ft-monitor">Monitor</span> Hub &middot; Fleet Management Console &middot; <a href="https://coreconduit.com" target="_blank">CoreConduit</a> Consulting Services</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal-box">
+    <div class="modal-icon" id="modal-icon">&oslash;</div>
+    <div class="modal-title" id="modal-title">Confirm</div>
+    <div class="modal-msg" id="modal-msg">Are you sure?</div>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="hideModal()">Cancel</button>
+      <button class="modal-confirm" id="modal-yes">Confirm</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ====================================================================
+// SysMonitor Hub Frontend — Fleet Management Edition
+// ====================================================================
+const POLL = {{ config.poll_interval * 1000 }};
+let activeView = 'fleet';
+let detailNode = null;
+let detailTab = 'info';
+let fleetCache = null;
+
+// -- Helpers --
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+let _tt;
+function toast(msg, type='info') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(_tt);
+  _tt = setTimeout(() => t.className = 'toast', 3000);
+}
+function hideModal() { $('modal').classList.remove('show'); }
+
+// -- API Layer --
+async function api(path, opts) {
+  try {
+    const r = await fetch('/api/' + path, opts);
+    return await r.json();
+  } catch { return null; }
+}
+function apiPost(path, body) {
+  return api(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
+}
+function apiPut(path, body) {
+  return api(path, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
+}
+function apiDelete(path) {
+  return api(path, { method: 'DELETE' });
+}
+
+// ====================================================================
+// Navigation
+// ====================================================================
+document.querySelectorAll('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => showView(btn.dataset.view));
+});
+
+function showView(name) {
+  if (name === 'detail' && !detailNode) return;
+  activeView = name;
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  $('view-' + name).classList.add('active');
+  if (name === 'fleet') refreshFleet();
+  if (name === 'detail') refreshDetail();
+}
+
+// ====================================================================
+// Fleet View
+// ====================================================================
+function tempColor(t) {
+  if (t == null) return 'var(--text-muted)';
+  if (t > 68) return 'var(--red)';
+  if (t > 55) return 'var(--orange)';
+  return 'var(--green)';
+}
+function cpuColor(c) {
+  if (c == null) return 'var(--text-muted)';
+  if (c > 80) return 'var(--red)';
+  if (c > 50) return 'var(--orange)';
+  return 'var(--blue)';
+}
+
+async function refreshFleet() {
+  const d = await api('fleet');
+  if (!d) return;
+  fleetCache = d;
+
+  $('stat-online').textContent = d.online;
+  $('stat-total').textContent = d.total;
+  $('stat-online').className = 'num' + (d.online < d.total && d.total > 0 ? ' warn' : '');
+
+  const onlineNodes = d.nodes.filter(n => n.online);
+  // Security alert total reflects the last successful poll for every known
+  // node (not just currently-online ones), so an alert doesn't disappear
+  // from the fleet-wide tile just because a node briefly drops offline.
+  const totalSecurity = d.nodes.reduce((s, n) => s + (n.security_actionable_count || 0), 0);
+  if (onlineNodes.length > 0) {
+    const avgCpu = onlineNodes.reduce((s, n) => s + (n.cpu_usage || 0), 0) / onlineNodes.length;
+    const maxTemp = Math.max(...onlineNodes.map(n => n.temperature || 0));
+    const avgRam = onlineNodes.reduce((s, n) => s + (n.memory_percent || 0), 0) / onlineNodes.length;
+    $('fm-nodes').innerHTML = d.online + '<span class="fm-unit">/' + d.total + '</span>';
+    $('fm-cpu').innerHTML = avgCpu.toFixed(1) + '<span class="fm-unit">%</span>';
+    $('fm-temp').innerHTML = maxTemp.toFixed(0) + '<span class="fm-unit">&deg;C</span>';
+    $('fm-ram').innerHTML = avgRam.toFixed(1) + '<span class="fm-unit">%</span>';
+    $('fm-security').innerHTML = String(totalSecurity);
+  } else {
+    $('fm-nodes').innerHTML = '0<span class="fm-unit">/' + d.total + '</span>';
+    $('fm-cpu').innerHTML = '&mdash;<span class="fm-unit">%</span>';
+    $('fm-temp').innerHTML = '&mdash;<span class="fm-unit">&deg;</span>';
+    $('fm-ram').innerHTML = '&mdash;<span class="fm-unit">%</span>';
+    $('fm-security').innerHTML = d.nodes.length ? String(totalSecurity) : '&mdash;';
+  }
+  $('fm-security').parentElement.style.color = totalSecurity > 0 ? 'var(--red)' : '';
+
+  if (d.nodes.length === 0) {
+    $('node-grid').innerHTML = '<div class="empty-state" style="grid-column:1/-1">' +
+      '<svg class="empty-pie" width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">' +
+        '<path d="M12 44c0-12 8-24 20-24s20 12 20 24z" fill="var(--blue-dim)" opacity="0.25"/>' +
+        '<path d="M10 44h44v4a4 4 0 01-4 4H14a4 4 0 01-4-4z" fill="var(--orange-dim)" opacity="0.2"/>' +
+      '</svg>' +
+      '<div class="empty-title">No Nodes in the Kitchen</div>' +
+      '<div class="empty-sub">Use "Add Node" or The Oven to discover SysMonitor instances</div>' +
+    '</div>';
+    return;
+  }
+
+  $('node-grid').innerHTML = d.nodes.map(n => '<div class="card node-card ' + (n.online?'':'offline') + '" onclick="openNode(\'' + n.id + '\')">' +
+    '<div class="node-hdr"><div>' +
+      '<div class="node-name">' + esc(n.label) + (n.is_raspberry_pi ? ' <span class="node-pi-badge" title="Raspberry Pi">Pi</span>' : '') + '</div>' +
+      '<div class="node-model">' + esc(n.model || n.host + ':' + n.port) + '</div>' +
+    '</div><div class="node-status-dot ' + (n.online?'on':'off') + '"></div></div>' +
+    (n.llm_serving_count > 0 ? '<div class="node-llm-badge" title="' + esc((n.llm_services||[]).filter(function(s){return s.serving;}).flatMap(function(s){return s.models;}).join(', ')) + '">🧠 ' + n.llm_serving_count + ' model' + (n.llm_serving_count===1?'':'s') + ' serving</div>' : '') +
+    (n.security_actionable_count > 0 ? '<div class="node-security-badge" title="' + esc((n.security_flagged_listeners||[]).map(function(l){return l.label+' :'+l.port;}).join(', ')) + '">🛡 ' + n.security_actionable_count + ' security alert' + (n.security_actionable_count===1?'':'s') + '</div>' : '') +
+    (n.online ? '<div class="node-metrics">' +
+      '<div class="node-metric"><div class="nm-val" style="color:' + cpuColor(n.cpu_usage) + '">' + (n.cpu_usage != null ? n.cpu_usage.toFixed(1) : '&mdash;') + '</div><div class="nm-label">CPU %</div></div>' +
+      '<div class="node-metric"><div class="nm-val" style="color:' + tempColor(n.temperature) + '">' + (n.temperature != null ? n.temperature.toFixed(0) : '&mdash;') + '</div><div class="nm-label">Temp &deg;C</div></div>' +
+      '<div class="node-metric"><div class="nm-val">' + (n.memory_percent != null ? n.memory_percent.toFixed(0) : '&mdash;') + '</div><div class="nm-label">RAM %</div></div>' +
+    '</div>' +
+    '<div class="node-footer"><span>&uarr; ' + (n.uptime || '&mdash;') + '</span>' +
+      '<div class="node-actions" onclick="event.stopPropagation()">' +
+        '<button class="node-action-btn view-btn" onclick="openNode(\'' + n.id + '\')">Details</button>' +
+        '<button class="node-action-btn remove" onclick="confirmRemoveNode(\'' + n.id + '\',\'' + esc(n.label) + '\')">&#10005;</button>' +
+      '</div></div>'
+    : '<div class="node-footer"><span>offline</span>' +
+      '<div class="node-actions" onclick="event.stopPropagation()">' +
+        '<button class="node-action-btn remove" onclick="confirmRemoveNode(\'' + n.id + '\',\'' + esc(n.label) + '\')">&#10005;</button>' +
+      '</div></div>') +
+  '</div>').join('');
+}
+
+// -- Add Node --
+function toggleAddNode() {
+  const f = $('add-form');
+  const show = !f.classList.contains('show');
+  f.classList.toggle('show', show);
+  if (show) { $('add-host').value = ''; $('add-label').value = ''; $('add-host').focus(); }
+}
+
+async function addNode() {
+  const host = $('add-host').value.trim();
+  const port = parseInt($('add-port').value) || 8585;
+  const label = $('add-label').value.trim();
+  if (!host) { $('add-host').focus(); return; }
+  const r = await apiPost('nodes', { host, port, label });
+  if (r && r.success) {
+    toast('Node added to the kitchen', 'success');
+    toggleAddNode();
+    setTimeout(refreshFleet, 500);
+  } else {
+    toast(r?.error || 'Failed to add', 'error');
+  }
+}
+
+// -- Remove Node --
+let _removeId = null;
+function confirmRemoveNode(id, label) {
+  _removeId = id;
+  $('modal').classList.add('show');
+  $('modal-icon').textContent = '\u2298';
+  $('modal-title').textContent = 'Remove Node';
+  $('modal-msg').textContent = 'Remove "' + label + '" from the kitchen? The SysMonitor instance itself will keep running.';
+  const btn = $('modal-yes');
+  btn.textContent = 'Remove';
+  btn.style.background = 'rgba(212,48,48,0.08)'; btn.style.color = 'var(--red)'; btn.style.borderColor = 'rgba(212,48,48,0.3)';
+  btn.onclick = async () => {
+    hideModal();
+    const r = await apiDelete('nodes/' + _removeId);
+    if (r && r.success) { toast('Node removed', 'warning'); refreshFleet(); }
+    else toast(r?.error || 'Failed', 'error');
+    _removeId = null;
+  };
+}
+
+// ====================================================================
+// Discovery
+// ====================================================================
+async function runDiscovery() {
+  const btn = $('discover-go');
+  const subnet = $('discover-subnet').value.trim() || null;
+  const port = parseInt($('discover-port').value) || null;
+
+  btn.disabled = true;
+  $('discover-ctl').classList.add('scanning');
+  $('discover-status').textContent = 'Scanning the network\u2026 this may take 30\u201345 seconds.';
+  $('discover-results').innerHTML = '';
+
+  const r = await apiPost('discover', { subnet, port });
+  btn.disabled = false;
+  $('discover-ctl').classList.remove('scanning');
+
+  if (!r) { $('discover-status').textContent = 'Scan failed.'; return; }
+  $('discover-status').textContent = 'Found ' + r.count + ' SysMonitor instance' + (r.count !== 1 ? 's' : '') + '.';
+
+  if (r.found.length === 0) {
+    $('discover-results').textContent = 'No SysMonitor instances found on this subnet.';
+    return;
+  }
+
+  $('discover-results').innerHTML = r.found.map(f =>
+    '<div class="card found-item" style="--accent:var(--green);--accent-end:var(--cyan)">' +
+      '<div class="node-status-dot on"></div>' +
+      '<div class="found-info">' +
+        '<div class="found-host">' + esc(f.host) + ':' + f.port + '</div>' +
+        '<div class="found-detail">' + esc(f.hostname || '\u2014') + ' \u00b7 ' + esc(f.model || 'unknown') + '</div>' +
+      '</div>' +
+      (f.already_registered
+        ? '<span class="found-registered">already added</span>'
+        : '<button class="found-add-btn" id="found-btn-' + f.id + '" onclick="bindDiscovered(\'' + esc(f.host) + '\',' + f.port + ',\'' + esc(f.hostname) + '\',\'' + f.id + '\')">Add</button>') +
+    '</div>'
+  ).join('');
+}
+
+async function bindDiscovered(host, port, label, id) {
+  const btn = $('found-btn-' + id);
+  if (btn) btn.disabled = true;
+  const r = await apiPost('nodes', { host, port, label });
+  if (r && r.success) {
+    toast('Added ' + (label || host), 'success');
+    if (btn) { btn.textContent = 'Added'; btn.disabled = true; }
+  } else {
+    toast(r?.error || 'Failed', 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ====================================================================
+// Detail View
+// ====================================================================
+function openNode(id) {
+  detailNode = id;
+  detailTab = 'info';
+  const nav = $('nav-detail');
+  nav.style.display = '';
+  if (fleetCache) {
+    const n = fleetCache.nodes.find(x => x.id === id);
+    if (n) $('nav-detail-label').textContent = n.label;
+  }
+  showView('detail');
+}
+
+function switchDetailTab(tab) {
+  detailTab = tab;
+  document.querySelectorAll('.detail-tab').forEach(t => t.classList.toggle('active', t.dataset.dtab === tab));
+  document.querySelectorAll('.detail-panel').forEach(p => p.classList.remove('active'));
+  $('dpanel-' + tab).classList.add('active');
+  refreshDetail();
+}
+
+function barHTML(label, value, max, detail, color) {
+  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+  return '<div class="bar-wrap">' +
+    '<div class="bar-meta"><span class="lbl">' + esc(label) + '</span><span class="val">' + esc(detail) + '</span></div>' +
+    '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+  '</div>';
+}
+
+async function refreshDetail() {
+  if (!detailNode) return;
+  const nid = detailNode;
+
+  if (detailTab === 'info') {
+    const boot = await api('nodes/' + nid + '/boot');
+    const status = await api('nodes/' + nid + '/status');
+    const llm = await api('nodes/' + nid + '/llm');
+    const security = await api('nodes/' + nid + '/security');
+    const online = !!status && !status.error;
+    $('detail-status-dot').className = 'node-status-dot ' + (online ? 'on' : 'off');
+
+    let html = '<div class="card" style="--accent:var(--blue);--accent-end:var(--blue-dim)">';
+    if (boot && !boot.error) {
+      $('detail-title').textContent = boot.hostname || 'Unknown';
+      $('detail-subtitle').textContent = (boot.model || boot.cpu_model || '\u2014') + (boot.is_raspberry_pi ? ' [Pi]' : '');
+      const rows = [
+        ['Platform', boot.is_raspberry_pi ? 'Raspberry Pi' : 'Linux'],
+        ['Hostname', boot.hostname], ['Model', boot.model],
+        ['SoC', boot.soc], ['CPU Model', boot.cpu_model],
+        ['CPU Vendor', boot.cpu_vendor], ['Architecture', boot.architecture],
+        ['Kernel', boot.kernel], ['OS', boot.os],
+        ['Max Freq', boot.cpu_max_freq],
+        ['GPU Memory', boot.gpu_mb ? boot.gpu_mb + ' MB' : ''],
+        ['Python', boot.python],
+      ].filter(function(r){ return r[1]; });
+      html += rows.map(function(r){ return '<div class="info-row"><span class="info-key">' + esc(r[0]) + '</span><span class="info-val">' + esc(r[1]) + '</span></div>'; }).join('');
+    } else {
+      html += '<div style="color:var(--text-muted);font-family:var(--font-mono);font-size:13px;padding:10px">Unreachable</div>';
+    }
+    html += '</div>';
+
+    if (status && !status.error) {
+      html += '<div class="card" style="--accent:var(--cyan);--accent-end:var(--blue)">';
+      html += barHTML('CPU', status.cpu?.usage || 0, 100, (status.cpu?.usage || 0).toFixed(1) + '%', cpuColor(status.cpu?.usage));
+      html += barHTML('RAM', status.memory?.used_mb || 0, status.memory?.total_mb || 1,
+        (status.memory?.used_mb||0).toFixed(0) + ' / ' + (status.memory?.total_mb||0).toFixed(0) + ' MB', 'var(--cyan)');
+      html += '<div style="display:flex;justify-content:space-between;font-size:12px;font-family:var(--font-mono);color:var(--text-muted);margin-top:6px">' +
+        '<span>Temp: <span style="color:' + tempColor(status.temperature) + '">' + (status.temperature != null ? status.temperature + '\u00b0C' : '\u2014') + '</span></span>' +
+        '<span>Uptime: ' + (status.uptime?.formatted || '\u2014') + '</span>' +
+        '<span>Load: ' + ((status.cpu?.load_avg || []).map(function(l){ return l.toFixed(2); }).join(' / ') || '\u2014') + '</span>' +
+      '</div>';
+      html += '</div>';
+    }
+
+    if (Array.isArray(llm) && llm.length) {
+      html += '<div class="card" style="--accent:#a855f7;--accent-end:var(--blue)">' +
+        '<div style="font-family:var(--font-mono);font-size:11px;letter-spacing:1px;color:var(--text-muted);margin-bottom:8px">AI / LLM SERVICES</div>' +
+        llm.map(function(s) {
+          var models = (s.models || []).map(function(m){ return '<span class="node-pi-badge" style="color:#a855f7;background:rgba(168,85,247,0.1);border-color:rgba(168,85,247,0.3)">' + esc(m) + '</span>'; }).join(' ');
+          return '<div class="info-row"><span class="info-key">' + esc(s.label) + ' :' + s.port + '</span><span class="info-val">' + (s.serving ? models : '\u2014') + '</span></div>';
+        }).join('') +
+      '</div>';
+    }
+
+    if (security && security.available) {
+      var sSum = security.summary || {};
+      var bySev = sSum.findings_by_severity || {};
+      html += '<div class="card" style="--accent:var(--red);--accent-end:#7f1d1d">' +
+        '<div style="font-family:var(--font-mono);font-size:11px;letter-spacing:1px;color:var(--text-muted);margin-bottom:8px">SECURITY (hiddenscope)</div>' +
+        '<div class="info-row"><span class="info-key">Connections</span><span class="info-val">' + (sSum.total_connections ?? '\u2014') + ' (' + (sSum.external_connections ?? 0) + ' external)</span></div>' +
+        '<div class="info-row"><span class="info-key">Findings</span><span class="info-val">high: ' + (bySev.high||0) + ' &middot; medium: ' + (bySev.medium||0) + ' &middot; critical: ' + (bySev.critical||0) + '</span></div>' +
+        (security.flagged_listeners||[]).map(function(l){
+          return '<div class="info-row"><span class="info-key">Port ' + l.port + '</span><span class="info-val" style="color:var(--red)">' + esc(l.label) + ' &mdash; ' + esc(l.proc||'unknown') + '</span></div>';
+        }).join('') +
+      '</div>';
+    } else if (security && !security.available) {
+      html += '<div class="card" style="--accent:var(--text-muted);--accent-end:var(--text-muted)">' +
+        '<div style="color:var(--text-muted);font-family:var(--font-mono);font-size:12px">Security monitoring unavailable on this node (hiddenscope_scanner.py not installed).</div>' +
+      '</div>';
+    }
+
+    $('detail-info-content').innerHTML = html;
+  }
+
+  if (detailTab === 'services') {
+    const svcs = await api('nodes/' + nid + '/services');
+    if (svcs && !svcs.error && Array.isArray(svcs)) {
+      $('detail-svc-content').innerHTML = svcs.map(function(s){
+        return '<div class="card svc-item" style="--accent:' + (s.active?'var(--green)':'var(--border)') + ';--accent-end:' + (s.active?'var(--cyan)':'var(--border)') + '">' +
+          '<span class="svc-dot ' + (s.active?'on':'off') + '"></span>' +
+          '<div class="svc-info"><div class="svc-name">' + esc(s.name) + '</div><div class="svc-desc">' + esc(s.description) + '</div></div>' +
+          '<span class="svc-badge ' + (s.enabled?'enabled':'disabled') + '">' + (s.enabled?'enabled':'disabled') + '</span>' +
+          '<div class="svc-actions">' +
+            '<button class="svc-btn ' + (s.active?'halt':'go') + '" onclick="nodeSvcAction(\'' + s.name + '\',\'' + (s.active?'stop':'start') + '\')">' + (s.active?'Stop':'Start') + '</button>' +
+            '<button class="svc-btn cyc" onclick="nodeSvcAction(\'' + s.name + '\',\'restart\')">\u21bb</button>' +
+          '</div></div>';
+      }).join('');
+    } else {
+      $('detail-svc-content').innerHTML = '<div class="card" style="--accent:var(--border);--accent-end:var(--border)"><div style="color:var(--text-muted);font-family:var(--font-mono);font-size:13px;padding:10px">Unreachable</div></div>';
+    }
+  }
+
+  if (detailTab === 'processes') {
+    const procs = await api('nodes/' + nid + '/processes');
+    if (procs && !procs.error && Array.isArray(procs)) {
+      $('detail-proc-content').innerHTML = '<div class="card" style="--accent:var(--cyan);--accent-end:var(--blue)"><div style="overflow-x:auto">' +
+        '<table class="proc-tbl"><thead><tr><th>PID</th><th>User</th><th class="r">CPU%</th><th class="r">Mem%</th><th>Command</th></tr></thead><tbody>' +
+        procs.map(function(p){
+          return '<tr><td>' + p.pid + '</td><td>' + esc(p.user) + '</td>' +
+            '<td class="r" style="color:' + (p.cpu > 20 ? 'var(--orange)' : 'var(--text-muted)') + '">' + p.cpu.toFixed(1) + '</td>' +
+            '<td class="r">' + p.mem.toFixed(1) + '</td>' +
+            '<td class="cmd">' + esc(p.command) + '</td></tr>';
+        }).join('') +
+        '</tbody></table></div></div>';
+    } else {
+      $('detail-proc-content').innerHTML = '<div class="card" style="--accent:var(--border);--accent-end:var(--border)"><div style="color:var(--text-muted);font-family:var(--font-mono);font-size:13px;padding:10px">Unreachable</div></div>';
+    }
+  }
+
+  if (detailTab === 'storage') {
+    const devs = await api('nodes/' + nid + '/storage');
+    if (devs && !devs.error && Array.isArray(devs)) {
+      $('detail-storage-content').innerHTML = devs.map(function(d){
+        const color = d.percent > 85 ? 'var(--red)' : d.percent > 65 ? 'var(--orange)' : 'var(--blue)';
+        const tGB = (d.total_mb/1024).toFixed(1), uGB = (d.used_mb/1024).toFixed(1), fGB = (d.avail_mb/1024).toFixed(1);
+        return '<div class="card" style="--accent:' + color + ';--accent-end:var(--cyan)">' +
+          '<div style="display:flex;justify-content:space-between;margin-bottom:8px">' +
+            '<span style="font-family:var(--font-mono);font-size:14px;color:var(--text-primary);font-weight:500">' + esc(d.mount) + '</span>' +
+            '<span style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono)">' + esc(d.device) + '</span>' +
+          '</div>' +
+          barHTML(d.fstype, d.used_mb, d.total_mb, uGB + ' / ' + tGB + ' GB', color) +
+          '<div style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);margin-top:3px">Free: ' + fGB + ' GB</div>' +
+        '</div>';
+      }).join('');
+    } else {
+      $('detail-storage-content').innerHTML = '<div class="card" style="--accent:var(--border);--accent-end:var(--border)"><div style="color:var(--text-muted);font-family:var(--font-mono);font-size:13px;padding:10px">Unreachable</div></div>';
+    }
+  }
+
+  if (detailTab === 'logs') {
+    const logs = await api('nodes/' + nid + '/logs');
+    if (logs && !logs.error && Array.isArray(logs)) {
+      $('detail-logs-content').innerHTML = '<div class="card" style="--accent:var(--green);--accent-end:var(--cyan)">' +
+        '<div class="log-area">' + logs.map(function(l){
+          return '<div><span class="log-ts">[' + l.ts + ']</span> <span class="log-' + (l.level||'info') + '">' + esc(l.msg) + '</span></div>';
+        }).join('') + '</div></div>';
+    } else {
+      $('detail-logs-content').innerHTML = '<div class="card" style="--accent:var(--border);--accent-end:var(--border)"><div style="color:var(--text-muted);font-family:var(--font-mono);font-size:13px;padding:10px">Unreachable</div></div>';
+    }
+  }
+}
+
+async function nodeSvcAction(svc, action) {
+  if (!detailNode) return;
+  const r = await apiPost('nodes/' + detailNode + '/services/' + svc + '/' + action);
+  if (r && r.success) {
+    toast(action.charAt(0).toUpperCase() + action.slice(1) + 'ed ' + svc, 'success');
+    setTimeout(function(){ refreshDetail(); }, 500);
+  } else {
+    toast('Failed: ' + (r?.error || r?.stderr || 'unknown'), 'error');
+  }
+}
+
+// ====================================================================
+// Init + Polling
+// ====================================================================
+async function init() {
+  await refreshFleet();
+  setInterval(function(){
+    if (activeView === 'fleet') refreshFleet();
+    if (activeView === 'detail') refreshDetail();
+  }, POLL);
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+[
+  "ssh",
+  "nginx",
+  "docker",
+  "ollama",
+  "mosquitto",
+  "cron",
+  "avahi-daemon"
+]

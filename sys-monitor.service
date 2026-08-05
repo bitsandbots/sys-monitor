@@ -1,0 +1,32 @@
+[Unit]
+Description=SysMonitor — Linux System Monitor (Ubuntu/Debian & Raspberry Pi)
+Documentation=https://github.com/bitsandbots/sys-monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sys-monitor
+ExecStart=/usr/bin/python3 /opt/sys-monitor/sys_monitor.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment
+Environment=SYSMONITOR_HOST=0.0.0.0
+Environment=SYSMONITOR_PORT=8585
+# Environment=SYSMONITOR_TOKEN=your-secret-token
+# Environment=SYSMONITOR_SERVICES=ssh,nginx,docker,ollama,mosquitto
+# Environment=SYSMONITOR_REFRESH=2
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/opt/sys-monitor
+ProtectHome=true
+NoNewPrivileges=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

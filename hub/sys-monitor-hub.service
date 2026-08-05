@@ -1,0 +1,23 @@
+[Unit]
+Description=SysMonitor Hub — Fleet Management Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sys-monitor/hub
+ExecStart=/usr/bin/python3 /opt/sys-monitor/hub/sys_monitor_hub.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Optional env overrides
+# Environment=SYSHUB_PORT=8686
+# Environment=SYSHUB_TOKEN=your-secret
+# Environment=SYSHUB_POLL_INTERVAL=5
+# Environment=SYSHUB_DISCOVERY_PORT=8585
+
+[Install]
+WantedBy=multi-user.target

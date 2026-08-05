@@ -1,0 +1,1532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SysMonitor — {{ boot.hostname or 'loading' }}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230c1a2e'/><text x='16' y='22' text-anchor='middle' font-size='18' fill='%232b7de9' font-family='sans-serif' font-weight='bold'>S</text></svg>">
+<style>
+@font-face { font-family:"Exo 2"; src:url("/static/fonts/exo-2-latin-700-normal.woff2") format("woff2"); font-weight:700; font-display:swap; }
+@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
+@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-600-normal.woff2") format("woff2"); font-weight:600; font-display:swap; }
+@font-face { font-family:"IBM Plex Mono"; src:url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
+</style>
+<style>
+/* ═══ Foundation ═══ */
+:root {
+  --bg-deep: #060c18;
+  --bg-primary: #0a1020;
+  --bg-card: #111d30;
+  --bg-card-hover: #142238;
+  --bg-topbar: #0c1a2e;
+  --border: #1a2640;
+  --border-light: #1e3050;
+  --text-primary: #e8ecf0;
+  --text-secondary: #c8d3e0;
+  --text-muted: #5a7090;
+  --text-label: #8a9bb5;
+  --blue: #2b7de9;
+  --orange: #e07018;
+  --green: #4ade80;
+  --red: #ef4444;
+  --purple: #a855f7;
+  --yellow: #fbbf24;
+  --cyan: #22d3ee;
+  --font-display: 'Exo 2', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: linear-gradient(160deg, var(--bg-deep) 0%, var(--bg-primary) 30%, #0d1628 100%);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-thumb { background: #2a3a55; border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ═══ Boot Screen ═══ */
+#boot-screen {
+  position: fixed; inset: 0; z-index: 1000;
+  background: var(--bg-deep);
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity 0.6s ease;
+}
+#boot-screen.fade-out { opacity: 0; pointer-events: none; }
+#boot-log {
+  max-width: 560px; width: 100%; padding: 32px;
+  font-family: var(--font-mono); font-size: 13px;
+  line-height: 1.9; color: var(--green);
+}
+#boot-log .line { opacity: 0; transform: translateY(4px); animation: bootLine 0.3s ease forwards; }
+#boot-log .highlight { color: var(--orange); }
+#boot-log .info { color: var(--blue); }
+.cursor-blink { animation: blink 1s step-end infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes bootLine { to { opacity: 1; transform: translateY(0); } }
+
+/* ═══ Main App (hidden during boot) ═══ */
+#app { display: none; }
+#app.visible { display: block; }
+
+/* ═══ Topbar ═══ */
+.topbar {
+  background: linear-gradient(90deg, var(--bg-topbar), #0f2035);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 100;
+}
+.topbar-brand { display: flex; align-items: center; gap: 10px; }
+.topbar-logo {
+  width: 32px; height: 32px; border-radius: 6px;
+  background: var(--blue);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.8rem; font-weight: 800; color: #fff; letter-spacing: 0; flex-shrink: 0;
+}
+.topbar-title { font-family: var(--font-display); font-weight: 700; font-size: 14px; color: var(--text-primary); letter-spacing: 0.5px; }
+.topbar-title span { color: var(--orange); }
+.topbar-sub { font-size: 9px; color: var(--text-muted); font-family: var(--font-mono); letter-spacing: 0.5px; margin-top: 1px; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.conn-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; transition: all 0.3s;
+}
+.conn-dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+.conn-dot.lost { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.5); animation: pulse-red 1.5s ease infinite; }
+@keyframes pulse-red { 0%,100%{box-shadow:0 0 4px rgba(239,68,68,0.4)} 50%{box-shadow:0 0 12px rgba(239,68,68,0.8)} }
+.conn-label { font-size: 10px; font-family: var(--font-mono); }
+.conn-label.ok { color: var(--green); }
+.conn-label.lost { color: var(--red); }
+.uptime-lbl { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); }
+
+/* ═══ Tab Bar ═══ */
+.tab-bar {
+  display: flex; gap: 1px; padding: 0 8px;
+  background: #0b1322; border-bottom: 1px solid var(--border);
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.tab-bar::-webkit-scrollbar { height: 0; }
+.tab-btn {
+  padding: 9px 12px; background: transparent; border: none;
+  border-bottom: 2px solid transparent; color: var(--text-muted);
+  font-size: 11px; font-family: var(--font-mono); cursor: pointer;
+  letter-spacing: 0.5px; white-space: nowrap; transition: all 0.2s;
+  display: flex; align-items: center; gap: 5px;
+}
+.tab-btn:hover { color: var(--text-label); }
+.tab-btn.active { background: var(--bg-card); border-bottom-color: var(--blue); color: var(--text-primary); }
+.tab-icon { font-size: 12px; }
+
+/* ═══ Content ═══ */
+.content { padding: 14px 14px 80px; max-width: 800px; margin: 0 auto; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* ═══ Cards ═══ */
+.card {
+  background: linear-gradient(145deg, var(--bg-card) 0%, #0f1928 100%);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 10px;
+  position: relative; overflow: hidden;
+}
+.card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, var(--accent-color, var(--blue)), transparent);
+}
+.card-hdr {
+  font-family: var(--font-display); font-weight: 600; font-size: 12px;
+  color: var(--text-label); margin-bottom: 10px; letter-spacing: 0.5px;
+  text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;
+}
+
+/* ═══ Gauges (3-up grid) ═══ */
+.gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px; }
+.gauge-card { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 12px 8px !important; }
+.gauge-label {
+  font-size: 10px; color: var(--text-label); font-family: var(--font-mono);
+  letter-spacing: 1px; text-transform: uppercase; margin-top: 4px;
+}
+
+/* ═══ Usage Bars ═══ */
+.bar-wrap { margin-bottom: 8px; }
+.bar-meta { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; font-family: var(--font-mono); }
+.bar-meta .lbl { color: var(--text-secondary); }
+.bar-meta .val { color: var(--text-muted); }
+.bar-track { height: 6px; border-radius: 3px; background: #141e30; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
+
+/* ═══ Sparkline ═══ */
+.sparkline { display: block; width: 100%; }
+
+/* ═══ Services ═══ */
+.svc-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; flex-wrap: wrap;
+}
+.svc-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  transition: all 0.3s;
+}
+.svc-dot.on { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,0.4); }
+.svc-dot.off { background: #475569; }
+.svc-info { flex: 1; min-width: 120px; }
+.svc-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); font-weight: 500; }
+.svc-desc { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+.svc-badge {
+  font-size: 9px; font-family: var(--font-mono); padding: 2px 6px;
+  border-radius: 3px; letter-spacing: 0.5px;
+}
+.svc-badge.enabled { background: #1a2e1a; color: var(--green); }
+.svc-badge.disabled { background: #1e2434; color: var(--text-muted); }
+.llm-chip {
+  display: inline-block; background: rgba(168,85,247,0.16); color: #c084fc;
+  border: 1px solid rgba(168,85,247,0.4); padding: 2px 8px; border-radius: 10px;
+  font-size: 10px; font-family: var(--font-mono); margin: 2px 4px 2px 0;
+}
+.llm-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.llm-row:last-child { border-bottom: none; }
+.llm-row-label { font-size: 12px; color: var(--text-primary); font-weight: 500; }
+.llm-chips { margin-top: 4px; }
+.llm-section-hdr {
+  font-size: 10px; color: var(--text-muted); font-family: var(--font-mono);
+  letter-spacing: 1px; margin: 4px 0 6px;
+}
+.security-summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 10px;
+}
+.security-stat { text-align: center; padding: 6px 4px; }
+.security-stat .val { font-family: var(--font-mono); font-size: 18px; font-weight: 600; color: var(--text-primary); }
+.security-stat .lbl { font-size: 9px; color: var(--text-muted); letter-spacing: 0.5px; margin-top: 2px; }
+.sev-badge {
+  font-size: 9px; font-family: var(--font-mono); padding: 2px 7px;
+  border-radius: 3px; letter-spacing: 0.5px; text-transform: uppercase; font-weight: 600;
+}
+.sev-badge.critical { background: rgba(239,68,68,0.18); color: var(--red); }
+.sev-badge.high { background: rgba(239,68,68,0.12); color: var(--red); }
+.sev-badge.medium { background: rgba(251,146,60,0.12); color: var(--orange); }
+.sev-badge.low { background: rgba(250,204,21,0.12); color: var(--yellow); }
+.sev-badge.info { background: rgba(148,163,184,0.12); color: var(--text-muted); }
+.security-finding {
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.security-finding:last-child { border-bottom: none; }
+.security-finding-hdr { display: flex; align-items: center; gap: 8px; }
+.security-finding-desc { font-size: 12px; color: var(--text-primary); font-weight: 500; }
+.security-finding-detail { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); }
+.allow-btn {
+  margin-left: auto; background: none; border: 1px solid var(--border); color: var(--text-muted);
+  padding: 2px 8px; border-radius: 4px; font-size: 9px; font-family: var(--font-mono); cursor: pointer;
+}
+.allow-btn:hover { color: var(--green); border-color: var(--green); }
+.allowlist-chip {
+  display: inline-flex; align-items: center; gap: 6px; background: #1a2438; border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 4px 3px 9px; font-size: 11px; font-family: var(--font-mono);
+  color: var(--text-secondary); margin: 3px 4px 3px 0;
+}
+.allowlist-chip button {
+  background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 0 4px;
+}
+.allowlist-chip button:hover { color: var(--red); }
+.svc-actions { display: flex; gap: 4px; margin-left: auto; }
+.svc-btn {
+  padding: 5px 10px; border-radius: 5px; font-size: 10px;
+  font-family: var(--font-mono); font-weight: 500; cursor: pointer;
+  border: 1px solid; transition: all 0.15s; letter-spacing: 0.3px;
+}
+.svc-btn:active { transform: scale(0.95); }
+.svc-btn.go   { background: #0d2818; color: var(--green); border-color: #1a4028; }
+.svc-btn.halt { background: #2a1414; color: var(--red); border-color: #4a2020; }
+.svc-btn.cyc  { background: #1e2010; color: var(--orange); border-color: #3a3010; }
+.svc-btn.tog  { background: #141828; color: var(--purple); border-color: #2a2848; }
+
+/* ═══ Service CRUD ═══ */
+.svc-toolbar {
+  display: flex; gap: 8px; margin-bottom: 10px; align-items: center;
+}
+.svc-add-btn {
+  padding: 8px 14px; border-radius: 6px; font-family: var(--font-mono);
+  font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid var(--blue);
+  background: linear-gradient(135deg, #0d1a30, #122040); color: var(--blue);
+  display: flex; align-items: center; gap: 5px; transition: all 0.15s;
+  letter-spacing: 0.3px; white-space: nowrap;
+}
+.svc-add-btn:hover { background: #142848; }
+.svc-add-btn:active { transform: scale(0.95); }
+.svc-add-form {
+  display: none; gap: 8px; align-items: center;
+  background: linear-gradient(145deg, var(--bg-card) 0%, #0f1928 100%);
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 16px; margin-bottom: 10px;
+  position: relative; overflow: hidden;
+}
+.svc-add-form::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, var(--blue), var(--orange));
+}
+.svc-add-form.show { display: flex; }
+.svc-add-input {
+  flex: 1; padding: 8px 12px; border-radius: 6px; font-family: var(--font-mono);
+  font-size: 12px; background: var(--bg-deep); color: var(--text-primary);
+  border: 1px solid var(--border); outline: none; min-width: 0;
+  transition: border-color 0.2s;
+}
+.svc-add-input:focus { border-color: var(--blue); }
+.svc-add-input::placeholder { color: var(--text-muted); }
+.svc-form-btn {
+  padding: 8px 12px; border-radius: 6px; font-family: var(--font-mono);
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+  border: 1px solid; white-space: nowrap;
+}
+.svc-form-btn:active { transform: scale(0.95); }
+.svc-form-btn.save { background: #0d2818; color: var(--green); border-color: #1a4028; }
+.svc-form-btn.cancel { background: #1a2640; color: var(--text-muted); border-color: #2a3a50; }
+.svc-remove-btn {
+  width: 22px; height: 22px; border-radius: 4px; border: 1px solid #2a1818;
+  background: transparent; color: #6a3030; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; transition: all 0.15s; flex-shrink: 0;
+}
+.svc-remove-btn:hover { background: #2a1414; color: var(--red); border-color: #4a2020; }
+.svc-remove-btn:active { transform: scale(0.9); }
+.svc-edit-btn {
+  width: 22px; height: 22px; border-radius: 4px; border: 1px solid #1e2844;
+  background: transparent; color: #4a5a80; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; transition: all 0.15s; flex-shrink: 0;
+}
+.svc-edit-btn:hover { background: #141828; color: var(--blue); border-color: #2a3a60; }
+.svc-edit-btn:active { transform: scale(0.9); }
+.svc-edit-row {
+  display: flex; gap: 6px; align-items: center; width: 100%;
+}
+.svc-edit-input {
+  flex: 1; padding: 5px 8px; border-radius: 4px; font-family: var(--font-mono);
+  font-size: 12px; background: var(--bg-deep); color: var(--text-primary);
+  border: 1px solid var(--blue); outline: none; min-width: 0;
+}
+.svc-meta-btns { display: flex; gap: 4px; margin-left: 4px; flex-shrink: 0; }
+
+/* ═══ Process Table ═══ */
+.proc-tbl { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--font-mono); }
+.proc-tbl th {
+  text-align: left; padding: 5px 6px; font-size: 9px; letter-spacing: 1px;
+  font-weight: 500; color: var(--text-muted); border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+}
+.proc-tbl td { padding: 6px; color: var(--text-secondary); border-bottom: 1px solid #111a28; }
+.proc-tbl .r { text-align: right; }
+.proc-tbl .cmd { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-label); font-size: 10px; }
+.kill-btn {
+  padding: 2px 8px; border-radius: 4px; font-size: 9px;
+  font-family: var(--font-mono); cursor: pointer;
+  background: #2a1414; color: var(--red); border: 1px solid #4a2020;
+  transition: all 0.15s;
+}
+.kill-btn:active { transform: scale(0.9); }
+
+/* ═══ Network ═══ */
+.rate-box { text-align: center; }
+.rate-dir { font-size: 10px; font-family: var(--font-mono); margin-bottom: 2px; }
+.rate-val { font-size: 18px; font-weight: 600; font-family: var(--font-mono); color: var(--text-primary); }
+.rate-val small { font-size: 10px; color: var(--text-muted); }
+.iface-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 0; border-bottom: 1px solid #111a28;
+  font-size: 11px; font-family: var(--font-mono);
+}
+.iface-name { color: var(--blue); font-weight: 600; }
+.iface-ip { color: var(--text-muted); margin-left: 6px; }
+.iface-state { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
+
+/* ═══ System Info ═══ */
+.info-row {
+  display: flex; justify-content: space-between; padding: 5px 0;
+  border-bottom: 1px solid #111a28; font-size: 11px; font-family: var(--font-mono);
+}
+.info-key { color: var(--text-muted); }
+.info-val { color: var(--text-secondary); text-align: right; max-width: 58%; word-break: break-word; }
+
+/* ═══ Power ═══ */
+.power-row { display: flex; gap: 10px; }
+.power-btn {
+  flex: 1; padding: 14px; border-radius: 8px; font-family: var(--font-mono);
+  font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.power-btn:active { transform: scale(0.97); }
+.power-btn.reboot { background: linear-gradient(135deg, #1a2640, #1e2e44); color: var(--orange); border: 1px solid #2e3a1e; }
+.power-btn.shutdown { background: linear-gradient(135deg, #2a1a1a, #3a1e1e); color: var(--red); border: 1px solid #4a2020; }
+
+/* ═══ Confirm Dialog ═══ */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: none; align-items: center; justify-content: center; z-index: 200;
+  backdrop-filter: blur(4px);
+}
+.modal-overlay.show { display: flex; }
+.modal-box {
+  background: #111d30; border: 1px solid #3a1e1e; border-radius: 12px;
+  padding: 28px; max-width: 340px; width: 90%; text-align: center;
+}
+.modal-icon { font-size: 36px; margin-bottom: 10px; }
+.modal-title { font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; font-family: var(--font-display); }
+.modal-msg { font-size: 11px; color: var(--text-label); margin-bottom: 18px; }
+.modal-btns { display: flex; gap: 10px; }
+.modal-btns button {
+  flex: 1; padding: 10px; border-radius: 6px; font-family: var(--font-mono);
+  font-weight: 600; font-size: 11px; cursor: pointer;
+}
+.modal-cancel { background: #1a2640; border: 1px solid #2a3a50; color: var(--text-muted); }
+.modal-confirm { border: 1px solid; }
+
+/* ═══ Logs ═══ */
+.log-area {
+  background: var(--bg-deep); border-radius: 6px; padding: 10px;
+  height: 340px; overflow-y: auto; font-family: var(--font-mono);
+  font-size: 11px; line-height: 1.7;
+}
+.log-ts { color: #2a3a50; }
+.log-info { color: var(--green); }
+.log-warning { color: var(--orange); }
+.log-error { color: var(--red); }
+.log-success { color: var(--cyan); }
+
+/* ═══ Toast ═══ */
+.toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  padding: 8px 18px; border-radius: 8px; font-size: 12px;
+  font-family: var(--font-mono); z-index: 300;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  animation: toastIn 0.3s ease; display: none;
+}
+.toast.show { display: block; }
+.toast.success { background: #0d2818; border: 1px solid #1a4028; color: var(--green); }
+.toast.warning { background: #2e2a1a; border: 1px solid #4a3a1a; color: var(--orange); }
+.toast.error   { background: #2a1414; border: 1px solid #4a2020; color: var(--red); }
+.toast.info    { background: #0d1a30; border: 1px solid #1a3050; color: var(--blue); }
+@keyframes toastIn { from { opacity:0; transform:translate(-50%,10px) } to { opacity:1; transform:translate(-50%,0) } }
+
+/* ═══ Footer ═══ */
+.footer {
+  text-align: center; padding: 12px; font-size: 9px; color: #1e2e44;
+  font-family: var(--font-mono); border-top: 1px solid #0d1520;
+  letter-spacing: 0.5px;
+}
+.footer a { color: var(--blue); text-decoration: none; }
+
+/* ═══ Responsive ═══ */
+@media (max-width: 420px) {
+  .gauges { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .svc-actions { width: 100%; justify-content: flex-end; margin-top: 6px; }
+  .topbar { padding: 8px 12px; }
+  .content { padding: 10px 10px 60px; }
+  .power-row { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ BOOT SCREEN ═══════════ -->
+<div id="boot-screen">
+  <div id="boot-log"></div>
+</div>
+
+<!-- ═══════════ MAIN APP ═══════════ -->
+<div id="app">
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="topbar-brand">
+      <div class="topbar-logo">CC</div>
+      <div>
+        <div class="topbar-title">Sys<span>Monitor</span></div>
+        <div class="topbar-sub" id="topbar-sub">{{ boot.hostname or '—' }} · {{ boot.architecture or '—' }}{{ ' · Raspberry Pi' if boot.is_raspberry_pi else '' }}</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="uptime-lbl" id="uptime-lbl">↑ —</span>
+      <span class="conn-dot ok" id="conn-dot"></span>
+      <span class="conn-label ok" id="conn-label">LIVE</span>
+    </div>
+  </div>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar" id="tab-bar">
+    <button class="tab-btn active" data-tab="overview"><span class="tab-icon">◉</span> Overview</button>
+    <button class="tab-btn" data-tab="services"><span class="tab-icon">⚙</span> Services</button>
+    <button class="tab-btn" data-tab="processes"><span class="tab-icon">▤</span> Processes</button>
+    <button class="tab-btn" data-tab="network"><span class="tab-icon">⇅</span> Network</button>
+    <button class="tab-btn" data-tab="storage"><span class="tab-icon">▧</span> Storage</button>
+    <button class="tab-btn" data-tab="system"><span class="tab-icon">⏻</span> System</button>
+    <button class="tab-btn" data-tab="security"><span class="tab-icon">🛡</span> Security</button>
+    <button class="tab-btn" data-tab="logs"><span class="tab-icon">☰</span> Logs</button>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- ══ OVERVIEW ══ -->
+    <div class="panel active" id="panel-overview">
+      <!-- Alert Cards (hidden by default, shown when alerts active) -->
+      <div class="card" id="power-alert-card" style="--accent-color:var(--yellow);display:none">
+        <div class="card-hdr">⚠ Power Alert</div>
+        <div id="power-alert-msg" style="color:var(--text-secondary);font-size:12px"></div>
+      </div>
+      <div class="card" id="temp-alert-card" style="--accent-color:var(--orange);display:none">
+        <div class="card-hdr">🌡 Temperature Alert</div>
+        <div id="temp-alert-msg" style="color:var(--text-secondary);font-size:12px"></div>
+      </div>
+      <div class="card" id="health-alert-card" style="--accent-color:var(--red);display:none">
+        <div class="card-hdr">⚠ System Health Alert</div>
+        <div id="health-alert-msg" style="color:var(--text-secondary);font-size:12px"></div>
+      </div>
+
+      <!-- Security Alert card — hiddenscope integration; shown when a suspicious
+           connection or listener is detected at/above HIDDENSCOPE_MIN_SEVERITY -->
+      <div class="card" id="security-alert-card" style="--accent-color:var(--red);display:none">
+        <div class="card-hdr">🛡 Security Alert <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="security-alert-count"></span></div>
+        <div id="security-alert-msg" style="color:var(--text-secondary);font-size:12px"></div>
+      </div>
+
+      <!-- LLM Models card — only shown when a local model server is detected serving something -->
+      <div class="card" id="llm-card" style="--accent-color:var(--purple);display:none">
+        <div class="card-hdr">🧠 LLM Models <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="llm-count"></span></div>
+        <div id="llm-summary"></div>
+      </div>
+
+      <div class="gauges">
+        <div class="card gauge-card" style="--accent-color:var(--blue)"><svg id="g-cpu" width="84" height="84"></svg><span class="gauge-label">CPU</span></div>
+        <div class="card gauge-card" style="--accent-color:var(--green)"><svg id="g-temp" width="84" height="84"></svg><span class="gauge-label">Temp</span></div>
+        <div class="card gauge-card" style="--accent-color:var(--purple)"><svg id="g-ram" width="84" height="84"></svg><span class="gauge-label">RAM</span></div>
+      </div>
+      <div class="card" style="--accent-color:var(--blue)">
+        <div class="card-hdr">CPU History <span style="color:var(--text-muted);font-weight:400;font-size:10px">60s</span></div>
+        <svg class="sparkline" id="spark-cpu" height="44"></svg>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:10px;font-family:var(--font-mono);color:var(--text-muted)">
+          <span id="load-avg">Load: —</span>
+          <span id="freq-info">—</span>
+        </div>
+      </div>
+      <div class="card" style="--accent-color:var(--purple)">
+        <div class="card-hdr">Memory</div>
+        <div id="mem-bars"></div>
+      </div>
+      <div class="card" style="--accent-color:var(--green)">
+        <div class="card-hdr">Temperature <span style="color:var(--text-muted);font-weight:400;font-size:10px">60s</span></div>
+        <svg class="sparkline" id="spark-temp" height="36"></svg>
+      </div>
+      <div class="card" style="--accent-color:var(--cyan)">
+        <div class="card-hdr">Network</div>
+        <div style="display:flex;justify-content:space-around" id="net-quick"></div>
+      </div>
+    </div>
+
+    <!-- ══ SERVICES ══ -->
+    <div class="panel" id="panel-services">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);letter-spacing:1px" id="svc-summary">SYSTEMD SERVICES</div>
+        <div class="svc-toolbar">
+          <button class="svc-add-btn" id="svc-add-toggle" onclick="toggleAddService()">+ Add Service</button>
+        </div>
+      </div>
+      <div class="svc-add-form" id="svc-add-form">
+        <input class="svc-add-input" id="svc-add-input" type="text"
+          placeholder="service-name (e.g. mosquitto, grafana-server)"
+          maxlength="64" spellcheck="false" autocomplete="off"
+          onkeydown="if(event.key==='Enter')addService();if(event.key==='Escape')toggleAddService()">
+        <button class="svc-form-btn save" onclick="addService()">Add</button>
+        <button class="svc-form-btn cancel" onclick="toggleAddService()">Cancel</button>
+      </div>
+      <div id="svc-list"></div>
+      <div id="llm-list"></div>
+    </div>
+
+    <!-- ══ PROCESSES ══ -->
+    <div class="panel" id="panel-processes">
+      <div class="card" style="--accent-color:var(--cyan)">
+        <div class="card-hdr">Top Processes</div>
+        <div style="overflow-x:auto">
+          <table class="proc-tbl"><thead><tr>
+            <th>PID</th><th>User</th><th class="r">CPU%</th><th class="r">Mem%</th><th>Command</th><th></th>
+          </tr></thead><tbody id="proc-body"></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ NETWORK ══ -->
+    <div class="panel" id="panel-network">
+      <div class="card" style="--accent-color:var(--green)">
+        <div class="card-hdr">Receive (RX) <span style="color:var(--green)">▼</span></div>
+        <svg class="sparkline" id="spark-rx" height="44"></svg>
+        <div id="rx-rate" style="font-size:12px;font-family:var(--font-mono);color:var(--green);margin-top:4px">—</div>
+      </div>
+      <div class="card" style="--accent-color:var(--orange)">
+        <div class="card-hdr">Transmit (TX) <span style="color:var(--orange)">▲</span></div>
+        <svg class="sparkline" id="spark-tx" height="44"></svg>
+        <div id="tx-rate" style="font-size:12px;font-family:var(--font-mono);color:var(--orange);margin-top:4px">—</div>
+      </div>
+      <div class="card" style="--accent-color:var(--blue)">
+        <div class="card-hdr">Interfaces</div>
+        <div id="iface-list"></div>
+      </div>
+    </div>
+
+    <!-- ══ STORAGE ══ -->
+    <div class="panel" id="panel-storage">
+      <div id="storage-list"></div>
+    </div>
+
+    <!-- ══ SYSTEM ══ -->
+    <div class="panel" id="panel-system">
+      <div class="card" style="--accent-color:var(--green)">
+        <div class="card-hdr">Device Information</div>
+        <div id="sysinfo-rows"></div>
+      </div>
+      <div class="card" style="--accent-color:var(--red)">
+        <div class="card-hdr">Power Controls</div>
+        <div class="power-row">
+          <button class="power-btn reboot" onclick="confirmPower('reboot')">↻ Reboot</button>
+          <button class="power-btn shutdown" onclick="confirmPower('shutdown')">⏻ Shutdown</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ SECURITY (hiddenscope) ══ -->
+    <div class="panel" id="panel-security">
+      <div id="security-unavailable-card" class="card" style="--accent-color:var(--text-muted);display:none">
+        <div class="card-hdr">🛡 Security Monitoring Unavailable</div>
+        <div style="color:var(--text-muted);font-size:12px">
+          <code>hiddenscope_scanner.py</code> was not found alongside <code>sys_monitor.py</code>, or the <code>ss</code> command isn't available on this system. Security monitoring is disabled; every other SysMonitor feature is unaffected.
+        </div>
+      </div>
+
+      <div id="security-content" style="display:none">
+        <div class="card" style="--accent-color:var(--cyan)">
+          <div class="card-hdr">Connection Summary</div>
+          <div id="security-summary" class="security-summary-grid"></div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:14px 0 8px">
+          <div class="llm-section-hdr" style="margin:0">SUSPICIOUS FINDINGS</div>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;font-size:10px;color:var(--text-muted);cursor:pointer">
+            <input type="checkbox" id="security-show-info-toggle" onchange="refreshSecurity()" style="accent-color:var(--blue)">
+            <span>Show informational (all external connections)</span>
+          </label>
+        </div>
+        <div id="security-findings-list"></div>
+
+        <div class="llm-section-hdr" style="margin:16px 0 8px">FLAGGED LISTENING PORTS</div>
+        <div id="security-listeners-list"></div>
+
+        <div class="llm-section-hdr" style="margin:16px 0 8px">ALLOWLIST</div>
+        <div class="card" style="--accent-color:var(--green)">
+          <div style="color:var(--text-muted);font-size:11px;margin-bottom:8px">Suppress known-safe ports, process names, or IP/CIDR ranges from future findings.</div>
+          <div id="security-allowlist-list" style="margin-bottom:10px"></div>
+          <div class="svc-add-form" style="display:flex;gap:6px;flex-wrap:wrap">
+            <input class="svc-add-input" id="allowlist-add-port" type="text" placeholder="port (e.g. 1234)" style="max-width:120px" spellcheck="false" autocomplete="off">
+            <input class="svc-add-input" id="allowlist-add-proc" type="text" placeholder="process name (e.g. lmstudio)" style="max-width:180px" spellcheck="false" autocomplete="off">
+            <input class="svc-add-input" id="allowlist-add-network" type="text" placeholder="IP or CIDR (e.g. 10.0.0.0/8)" style="max-width:200px" spellcheck="false" autocomplete="off">
+            <button class="svc-form-btn save" onclick="addAllowlistEntry()">Add</button>
+          </div>
+        </div>
+
+        <div class="llm-section-hdr" style="margin:16px 0 8px">STATIC SCAN</div>
+        <div class="card" style="--accent-color:var(--purple)">
+          <div style="color:var(--text-muted);font-size:11px;margin-bottom:8px">On-demand scan of a fixed, server-configured directory (<code>HIDDENSCOPE_SCAN_PATH</code>) for embedded secrets and reverse-shell patterns.</div>
+          <button class="svc-add-btn" onclick="runSecurityScan()" id="security-scan-btn">Run Static Scan</button>
+          <div id="security-scan-results" style="margin-top:10px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ LOGS ══ -->
+    <div class="panel" id="panel-logs">
+      <div class="card" style="--accent-color:var(--green)">
+        <div class="card-hdr">Event Log
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;font-size:10px;color:var(--text-muted);cursor:pointer">
+            <input type="checkbox" id="log-system-toggle" onchange="refreshLogs()" style="accent-color:var(--blue)">
+            <span>Show System Errors</span>
+          </label>
+          <button onclick="refreshLogs()" style="background:none;border:1px solid var(--border);color:var(--text-muted);padding:2px 8px;border-radius:4px;font-size:9px;font-family:var(--font-mono);cursor:pointer;margin-left:8px">Refresh</button>
+        </div>
+        <div class="log-area" id="log-area"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">Sys<span style="color:var(--orange)">Monitor</span> v{{ version }} · Ubuntu/Debian &amp; Raspberry Pi · <a href="https://coreconduit.com" target="_blank">CoreConduit</a> Consulting Services</div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal-box">
+    <div class="modal-icon" id="modal-icon">↻</div>
+    <div class="modal-title" id="modal-title">Confirm Reboot</div>
+    <div class="modal-msg" id="modal-msg">This will reboot the device immediately.</div>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="hideModal()">Cancel</button>
+      <button class="modal-confirm" id="modal-yes" onclick="execPower()">Reboot</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════
+// SysMonitor Frontend v2 — Synthesized
+// ════════════════════════════════════════════════════════════════════════
+const REFRESH = {{ config.refresh_interval * 1000 }};
+const MAX_H = 60;
+
+// ── State ──
+let cpuH = [], tempH = [], rxH = [], txH = [];
+let activeTab = 'overview';
+let connected = true;
+let missedPolls = 0;
+let pendingPower = null;
+
+// ── Helpers ──
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function fmtBytes(b) {
+  if (b < 1024) return b + ' B/s';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB/s';
+  return (b/1048576).toFixed(2) + ' MB/s';
+}
+
+// ── Toast ──
+let _tt;
+function toast(msg, type='info') {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(_tt);
+  _tt = setTimeout(() => t.className = 'toast', 3000);
+}
+
+// ── Connection Status ──
+function setConnected(ok) {
+  if (connected === ok) return;
+  connected = ok;
+  $('conn-dot').className = 'conn-dot ' + (ok ? 'ok' : 'lost');
+  $('conn-label').className = 'conn-label ' + (ok ? 'ok' : 'lost');
+  $('conn-label').textContent = ok ? 'LIVE' : 'LOST';
+  if (ok) toast('Connection restored', 'success');
+  else toast('Connection lost — retrying…', 'error');
+}
+
+// ── Boot Sequence ──
+(function boot() {
+  const bootInfo = {{ boot | tojson }};
+  const isPi = !!bootInfo.is_raspberry_pi;
+  const lines = [
+    { text: 'Scanning hardware…', cls: '' },
+    { text: 'Detected: ' + (bootInfo.model || bootInfo.cpu_model || 'Unknown device') + (isPi ? ' [RASPBERRY PI]' : ''), cls: 'highlight' },
+    { text: isPi
+        ? 'SoC: ' + (bootInfo.soc || '—') + ' | Arch: ' + (bootInfo.architecture || '—')
+        : 'CPU: ' + (bootInfo.cpu_vendor || bootInfo.cpu_model || '—') + ' | Arch: ' + (bootInfo.architecture || '—'),
+      cls: 'info' },
+    { text: (isPi && bootInfo.gpu_mb ? 'GPU ' + bootInfo.gpu_mb + 'MB | ' : '') + 'Kernel: ' + (bootInfo.kernel || '—'), cls: '' },
+    { text: 'Hostname: ' + (bootInfo.hostname || '—'), cls: '' },
+    { text: 'OS: ' + (bootInfo.os || '—'), cls: '' },
+    { text: 'Initializing monitors…', cls: '' },
+    { text: 'Scanning for local LLM services…', cls: '' },
+    { text: 'SysMonitor v{{ version }} ready.', cls: 'highlight' },
+  ];
+
+  const container = $('boot-log');
+  lines.forEach((l, i) => {
+    setTimeout(() => {
+      const div = document.createElement('div');
+      div.className = 'line';
+      div.style.animationDelay = '0s';
+      const ts = new Date().toTimeString().slice(0, 8);
+      div.innerHTML = `<span style="color:#2a3a50">[${ts}]</span> <span class="${l.cls}">${esc(l.text)}</span>`;
+      container.appendChild(div);
+
+      if (i === lines.length - 1) {
+        const cur = document.createElement('span');
+        cur.className = 'cursor-blink';
+        cur.textContent = '▌';
+        container.appendChild(cur);
+        setTimeout(() => {
+          $('boot-screen').classList.add('fade-out');
+          $('app').classList.add('visible');
+          setTimeout(() => $('boot-screen').style.display = 'none', 600);
+          init();
+        }, 800);
+      }
+    }, 320 * (i + 1));
+  });
+})();
+
+// ── Tabs ──
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    activeTab = btn.dataset.tab;
+    $('panel-' + activeTab).classList.add('active');
+    refreshTab();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// SVG Drawing
+// ════════════════════════════════════════════════════════════════════════
+function drawGauge(el, value, max, unit, color) {
+  const s = 84, sw = 7, r = (s - sw) / 2;
+  const circ = 2 * Math.PI * r;
+  const arc = circ * 0.75;
+  const pct = Math.min(value / max, 1);
+  const rot = 135;
+  const display = value < 10 ? value.toFixed(1) : Math.round(value);
+  el.innerHTML = `
+    <circle cx="${s/2}" cy="${s/2}" r="${r}" fill="none" stroke="#141e30" stroke-width="${sw}"
+      stroke-dasharray="${arc} ${circ}" stroke-linecap="round"
+      transform="rotate(${rot} ${s/2} ${s/2})"/>
+    <circle cx="${s/2}" cy="${s/2}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}"
+      stroke-dasharray="${arc*pct} ${circ}" stroke-linecap="round"
+      transform="rotate(${rot} ${s/2} ${s/2})" style="transition:stroke-dasharray 0.6s ease"/>
+    <text x="${s/2}" y="${s/2-2}" text-anchor="middle" dominant-baseline="central"
+      style="font-size:16px;font-family:var(--font-mono);fill:var(--text-primary);font-weight:600">${display}</text>
+    <text x="${s/2}" y="${s/2+12}" text-anchor="middle"
+      style="font-size:9px;font-family:var(--font-mono);fill:var(--text-muted)">${unit}</text>`;
+}
+
+function drawSparkline(el, data, color) {
+  if (!data || data.length < 2) return;
+  const w = el.clientWidth || 300, h = parseInt(el.getAttribute('height')) || 40;
+  const mn = Math.min(...data), mx = Math.max(...data), rng = mx - mn || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((v - mn) / rng) * (h - 6) - 3;
+    return `${x},${y}`;
+  });
+  const line = `M${pts.join(' L')}`;
+  const fill = `${line} L${w},${h} L0,${h} Z`;
+  const last = pts[pts.length-1].split(',');
+  el.innerHTML = `
+    <path d="${fill}" fill="${color}" opacity="0.1"/>
+    <path d="${line}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.5" fill="${color}"/>`;
+}
+
+function barHTML(label, value, max, detail, color) {
+  const pct = Math.min((value / max) * 100, 100);
+  return `<div class="bar-wrap">
+    <div class="bar-meta"><span class="lbl">${esc(label)}</span><span class="val">${esc(detail)}</span></div>
+    <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
+  </div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// API Layer
+// ════════════════════════════════════════════════════════════════════════
+async function api(path) {
+  try {
+    const r = await fetch('/api/' + path);
+    if (!r.ok) throw new Error(r.statusText);
+    missedPolls = 0;
+    setConnected(true);
+    return await r.json();
+  } catch (e) {
+    missedPolls++;
+    if (missedPolls >= 2) setConnected(false);
+    return null;
+  }
+}
+async function apiPost(path) {
+  try {
+    const r = await fetch('/api/' + path, { method: 'POST' });
+    return await r.json();
+  } catch (e) { return null; }
+}
+async function apiDelete(path) {
+  try {
+    const r = await fetch('/api/' + path, { method: 'DELETE' });
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Data Refresh
+// ════════════════════════════════════════════════════════════════════════
+
+// ── Alert Checkers ──
+function checkPowerAlert(power) {
+  const card = $('power-alert-card');
+  const msg = $('power-alert-msg');
+  if (!power || !power.available) { card.style.display = 'none'; return; }
+
+  if (power.undervoltage_now) {
+    card.style.display = 'block';
+    msg.textContent = '⚡ Undervoltage detected! Input voltage < 4.65V — Use a high-quality 5V/3A power supply';
+    return true;
+  }
+  if (power.frequency_capped_now) {
+    card.style.display = 'block';
+    msg.textContent = '🐌 CPU throttled — frequency capped due to thermal limits';
+    return true;
+  }
+  if (power.undervoltage_occurred) {
+    card.style.display = 'block';
+    msg.textContent = '⚡ Past undervoltage — Voltage dropped since boot, check power supply';
+    return true;
+  }
+  card.style.display = 'none';
+  return false;
+}
+
+function checkTempAlert(tempStatus) {
+  const card = $('temp-alert-card');
+  const msg = $('temp-alert-msg');
+  if (!tempStatus || tempStatus.level === 'normal') { card.style.display = 'none'; return false; }
+
+  card.style.display = 'block';
+  card.style.setProperty('--accent-color', tempStatus.color);
+  msg.textContent = tempStatus.message;
+  msg.style.color = tempStatus.color;
+  return true;
+}
+
+function checkHealthAlert(health) {
+  const card = $('health-alert-card');
+  const msg = $('health-alert-msg');
+
+  if (!health || (health.all_critical_ok && health.stable)) {
+    card.style.display = 'none';
+    return false;
+  }
+
+  card.style.display = 'block';
+  const issues = [];
+  if (!health.all_critical_ok && health.critical_services_failed) {
+    issues.push('Critical services down: ' + health.critical_services_failed.map(s => s.name).join(', '));
+  }
+  if (!health.stable && health.issues) {
+    health.issues.forEach(i => issues.push(i.message));
+  }
+  msg.textContent = issues.join(' | ');
+  return true;
+}
+
+async function refreshStatus() {
+  const d = await api('status');
+  if (!d) return;
+
+  // Check alerts
+  checkPowerAlert(d.power_status);
+  checkTempAlert(d.temperature_status);
+
+  // History
+  cpuH.push(d.cpu.usage); if (cpuH.length > MAX_H) cpuH.shift();
+  tempH.push(d.temperature); if (tempH.length > MAX_H) tempH.shift();
+
+  const rates = d.network_rates || {};
+  const primary = rates.eth0 || rates.wlan0 || Object.values(rates)[0] || { rx_rate:0, tx_rate:0 };
+  rxH.push(primary.rx_rate); if (rxH.length > MAX_H) rxH.shift();
+  txH.push(primary.tx_rate); if (txH.length > MAX_H) txH.shift();
+
+  if (d.uptime) $('uptime-lbl').textContent = '↑ ' + d.uptime.formatted;
+
+  // Overview
+  if (activeTab === 'overview') {
+    const cpuColor = d.cpu.usage > 80 ? 'var(--red)' : d.cpu.usage > 50 ? 'var(--orange)' : 'var(--blue)';
+    drawGauge($('g-cpu'), d.cpu.usage, 100, '%', cpuColor);
+
+    const tc = d.temperature > 68 ? 'var(--red)' : d.temperature > 55 ? 'var(--orange)' : 'var(--green)';
+    drawGauge($('g-temp'), d.temperature, 85, '°C', tc);
+
+    drawGauge($('g-ram'), d.memory.percent, 100, '%', 'var(--purple)');
+
+    drawSparkline($('spark-cpu'), cpuH, '#2b7de9');
+    drawSparkline($('spark-temp'), tempH, d.temperature > 60 ? '#ef4444' : '#4ade80');
+
+    $('load-avg').textContent = 'Load: ' + d.cpu.load_avg.map(l => l.toFixed(2)).join(' / ');
+    $('freq-info').textContent = (d.cpu.freq_mhz ? d.cpu.freq_mhz + ' MHz · ' : '') + d.cpu.core_count + ' cores';
+
+    $('mem-bars').innerHTML =
+      barHTML('RAM', d.memory.used_mb, d.memory.total_mb, d.memory.used_mb.toFixed(0)+' / '+d.memory.total_mb.toFixed(0)+' MB', 'var(--purple)') +
+      barHTML('Cached', d.memory.cached_mb, d.memory.total_mb, d.memory.cached_mb.toFixed(0)+' MB', '#6366f1') +
+      barHTML('Swap', d.memory.swap_used_mb, d.memory.swap_total_mb||1, d.memory.swap_used_mb.toFixed(0)+' / '+d.memory.swap_total_mb.toFixed(0)+' MB', 'var(--orange)');
+
+    $('net-quick').innerHTML = `
+      <div class="rate-box"><div class="rate-dir" style="color:var(--green)">▼ RX</div>
+        <div class="rate-val">${fmtBytes(primary.rx_rate)}</div></div>
+      <div style="width:1px;background:var(--border);margin:0 8px"></div>
+      <div class="rate-box"><div class="rate-dir" style="color:var(--orange)">▲ TX</div>
+        <div class="rate-val">${fmtBytes(primary.tx_rate)}</div></div>`;
+  }
+
+  // Network sparklines
+  if (activeTab === 'network') {
+    drawSparkline($('spark-rx'), rxH, '#4ade80');
+    drawSparkline($('spark-tx'), txH, '#e07018');
+    $('rx-rate').textContent = fmtBytes(primary.rx_rate);
+    $('tx-rate').textContent = fmtBytes(primary.tx_rate);
+  }
+}
+
+async function refreshTab() {
+  if (activeTab === 'services') {
+    const data = await api('services-with-ports');
+    if (!data) return;
+    const known = data.filter(s => s.known);
+    const unknown = data.filter(s => !s.known);
+    const active = known.filter(s => s.active).length;
+    $('svc-summary').textContent = `SERVICES & PORTS · ${active}/${known.length} ACTIVE · ${unknown.length} UNMAPPED`;
+    $('svc-list').innerHTML = data.map(s => {
+      if (s.known) {
+        // Known service (monitored)
+        const portStr = s.port ? `${s.port}/${s.protocol}` : '—';
+        return `<div class="card svc-item" style="--accent-color:${s.active?'var(--green)':'var(--border)'}" id="svc-card-${s.name}">
+          <span class="svc-dot ${s.active?'on':'off'}"></span>
+          <div class="svc-info" id="svc-info-${s.name}">
+            <div class="svc-name">${esc(s.name)}${s.port?` <span style="color:var(--cyan);font-weight:400">${portStr}</span>`:''}</div>
+            <div class="svc-desc">${esc(s.description)}</div>
+          </div>
+          <span class="svc-badge ${s.enabled?'enabled':'disabled'}">${s.enabled?'enabled':'disabled'}</span>
+          <div class="svc-actions">
+            <button class="svc-btn ${s.active?'halt':'go'}" onclick="svcAction('${s.name}','${s.active?'stop':'start'}')">${s.active?'Stop':'Start'}</button>
+            <button class="svc-btn cyc" onclick="svcAction('${s.name}','restart')">↻</button>
+            <button class="svc-btn tog" onclick="svcAction('${s.name}','${s.enabled?'disable':'enable'}')">${s.enabled?'Disable':'Enable'}</button>
+          </div>
+          <div class="svc-meta-btns">
+            <button class="svc-edit-btn" onclick="startEditService('${s.name}')" title="Rename">✎</button>
+            <button class="svc-remove-btn" onclick="confirmRemoveService('${s.name}')" title="Remove from list">✕</button>
+          </div>
+        </div>`;
+      } else {
+        // Unknown port (not mapped to a service)
+        return `<div class="card svc-item" style="--accent-color:var(--cyan);opacity:0.8">
+          <span class="svc-dot" style="background:var(--cyan);box-shadow:0 0 6px rgba(34,211,238,0.4)"></span>
+          <div class="svc-info">
+            <div class="svc-name"><span style="color:var(--cyan)">${s.port}</span><span style="color:var(--text-muted);font-weight:400">/${s.protocol}</span></div>
+            <div class="svc-desc">${s.address === '*' ? 'All interfaces' : esc(s.address)}</div>
+          </div>
+          <span class="svc-badge" style="background:#1a2a3a;color:var(--text-muted)">unknown</span>
+          <div class="svc-actions" style="margin-left:auto">
+            <button class="svc-btn go" onclick="addServiceForPort(${s.port},'${s.protocol}')" title="Add to monitored services">+ Add</button>
+          </div>
+        </div>`;
+      }
+    }).join('');
+  }
+
+  if (activeTab === 'processes') {
+    const procs = await api('processes?limit=12');
+    if (!procs) return;
+    $('proc-body').innerHTML = procs.map(p => {
+      const cc = p.cpu > 20 ? 'var(--orange)' : p.cpu > 5 ? 'var(--blue)' : 'var(--text-muted)';
+      const mc = p.mem > 15 ? 'var(--purple)' : 'var(--text-muted)';
+      return `<tr>
+        <td>${p.pid}</td><td>${esc(p.user)}</td>
+        <td class="r" style="color:${cc}">${p.cpu.toFixed(1)}</td>
+        <td class="r" style="color:${mc}">${p.mem.toFixed(1)}</td>
+        <td class="cmd">${esc(p.command)}</td>
+        <td><button class="kill-btn" onclick="killProc(${p.pid},'${esc(p.command).slice(0,30)}')">Kill</button></td>
+      </tr>`;
+    }).join('');
+  }
+
+  if (activeTab === 'network') {
+    const net = await api('network');
+    if (net && net.interfaces) {
+      $('iface-list').innerHTML = net.interfaces.map(iface => `
+        <div class="iface-row">
+          <div><span class="iface-name">${esc(iface.name)}</span><span class="iface-ip">${esc(iface.ip)}</span></div>
+          <span class="iface-state" style="color:${iface.state==='up'?'var(--green)':'var(--text-muted)'}">${iface.state.toUpperCase()}</span>
+        </div>`).join('');
+    }
+  }
+
+  if (activeTab === 'storage') {
+    const devs = await api('storage');
+    if (devs) {
+      $('storage-list').innerHTML = devs.map(d => {
+        const color = d.percent > 85 ? 'var(--red)' : d.percent > 65 ? 'var(--orange)' : 'var(--blue)';
+        const tGB = (d.total_mb/1024).toFixed(1), uGB = (d.used_mb/1024).toFixed(1), fGB = (d.avail_mb/1024).toFixed(1);
+        return `<div class="card" style="--accent-color:${color}">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+            <span style="font-family:var(--font-mono);font-size:12px;color:var(--text-primary);font-weight:500">${esc(d.mount)}</span>
+            <span style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono)">${esc(d.device)}</span>
+          </div>
+          ${barHTML(d.fstype, d.used_mb, d.total_mb, uGB+' / '+tGB+' GB', color)}
+          <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);margin-top:2px">Free: ${fGB} GB · ${100-d.percent}%</div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  if (activeTab === 'system') {
+    const info = await api('boot');
+    if (info) {
+      const rows = [
+        ['Platform', info.is_raspberry_pi ? 'Raspberry Pi' : 'Linux'],
+        ['Model', info.model], ['Hostname', info.hostname],
+        ['SoC', info.soc],
+        ['CPU Model', info.cpu_model], ['CPU Vendor', info.cpu_vendor],
+        ['Architecture', info.architecture],
+        ['Kernel', info.kernel], ['OS', info.os],
+        ['Max Freq', info.cpu_max_freq],
+        ['GPU Memory', info.gpu_mb ? info.gpu_mb + ' MB' : ''],
+        ['Revision', info.revision],
+        ['Python', info.python],
+      ].filter(([,v]) => v);
+      $('sysinfo-rows').innerHTML = rows.map(([k, v]) =>
+        `<div class="info-row"><span class="info-key">${esc(k)}</span><span class="info-val">${esc(v)}</span></div>`
+      ).join('');
+    }
+  }
+
+  if (activeTab === 'security') refreshSecurity();
+
+  if (activeTab === 'logs') refreshLogs();
+
+  // Poll system health (less frequent - every 5th tab refresh)
+  if (activeTab === 'overview' && Date.now() % 5 === 0) {
+    pollHealthStatus();
+  }
+}
+
+// ── Health Status Polling (separate endpoint, less frequent) ──
+async function pollHealthStatus() {
+  const health = await api('system-health');
+  if (health) checkHealthAlert(health);
+}
+
+// ── LLM Service Polling (separate endpoint, less frequent — involves
+//    live HTTP probes to each candidate port) ──
+async function refreshLLM() {
+  const llm = await api('llm');
+  if (!llm) return;
+  const serving = llm.filter(s => s.serving);
+
+  // Overview summary card — only visible when at least one model is being served
+  const card = $('llm-card');
+  if (serving.length) {
+    card.style.display = 'block';
+    $('llm-count').textContent = serving.length + ' ACTIVE';
+    $('llm-summary').innerHTML = serving.map(s => {
+      const models = s.models.map(m => `<span class="llm-chip">${esc(m)}</span>`).join(' ');
+      return `<div class="llm-row">
+        <span class="llm-row-label">${esc(s.label)} <span style="color:var(--text-muted);font-weight:400">:${s.port}</span></span>
+        <div class="llm-chips">${models}</div>
+      </div>`;
+    }).join('');
+  } else {
+    card.style.display = 'none';
+  }
+
+  // Services tab detail list — shows every candidate port, serving or not
+  const listEl = $('llm-list');
+  if (listEl) {
+    if (llm.length) {
+      listEl.innerHTML = '<div class="llm-section-hdr">AI / LLM SERVICES</div>' + llm.map(s => {
+        const statusColor = s.serving ? 'var(--green)' : 'var(--text-muted)';
+        const statusText = s.serving ? `Serving via ${esc(s.api)}` : 'Port open — no model API detected';
+        const models = s.models.length
+          ? s.models.map(m => `<span class="llm-chip">${esc(m)}</span>`).join(' ')
+          : '<span style="color:var(--text-muted);font-size:11px">—</span>';
+        return `<div class="card svc-item" style="--accent-color:${statusColor}">
+          <span class="svc-dot ${s.serving?'on':'off'}"></span>
+          <div class="svc-info">
+            <div class="svc-name">${esc(s.label)} <span style="color:var(--cyan);font-weight:400">${s.port}/tcp</span></div>
+            <div class="svc-desc">${statusText}</div>
+            <div style="margin-top:4px">${models}</div>
+          </div>
+        </div>`;
+      }).join('');
+    } else {
+      listEl.innerHTML = '';
+    }
+  }
+}
+
+// ── Security (hiddenscope) ──
+const SEV_ORDER = ['info', 'low', 'medium', 'high', 'critical'];
+let _lastSecurity = null;
+
+function sevBadge(sev) {
+  return `<span class="sev-badge ${sev}">${esc(sev)}</span>`;
+}
+
+async function refreshSecurity() {
+  const sec = await api('security');
+  if (!sec) return;
+  _lastSecurity = sec;
+
+  const alertCard = $('security-alert-card');
+  const unavailCard = $('security-unavailable-card');
+  const content = $('security-content');
+
+  if (!sec.available) {
+    alertCard.style.display = 'none';
+    if (unavailCard) unavailCard.style.display = 'block';
+    if (content) content.style.display = 'none';
+    return;
+  }
+  if (unavailCard) unavailCard.style.display = 'none';
+  if (content) content.style.display = 'block';
+
+  // Overview alert card — only visible when findings are actionable (>= HIDDENSCOPE_MIN_SEVERITY)
+  if (sec.actionable_count > 0) {
+    alertCard.style.display = 'block';
+    $('security-alert-count').textContent = sec.actionable_count + ' ACTIVE';
+    const top = sec.findings
+      .filter(f => SEV_ORDER.indexOf(f.severity) >= SEV_ORDER.indexOf('medium'))
+      .slice(0, 4)
+      .map(f => `${sevBadge(f.severity)} ${esc(f.description)} <span style="color:var(--text-muted)">(${esc(f.detail || '')})</span>`)
+      .join('<br>');
+    $('security-alert-msg').innerHTML = top || `${sec.actionable_count} suspicious finding(s) detected — see the Security tab.`;
+  } else {
+    alertCard.style.display = 'none';
+  }
+
+  // Summary stats
+  const s = sec.summary || {};
+  const bySev = s.findings_by_severity || {};
+  $('security-summary').innerHTML = [
+    ['Connections', s.total_connections],
+    ['External', s.external_connections],
+    ['Listeners', s.total_listeners],
+    ['Critical', bySev.critical || 0],
+    ['High', bySev.high || 0],
+    ['Medium', bySev.medium || 0],
+  ].map(([label, val]) => `<div class="security-stat"><div class="val">${val != null ? val : '—'}</div><div class="lbl">${esc(label.toUpperCase())}</div></div>`).join('');
+
+  // Findings list
+  const showInfo = $('security-show-info-toggle') && $('security-show-info-toggle').checked;
+  const findings = showInfo ? sec.findings : sec.findings.filter(f => f.severity !== 'info');
+  const findingsEl = $('security-findings-list');
+  if (findingsEl) {
+    findingsEl.innerHTML = findings.length ? findings.map(f => `
+      <div class="card security-finding" style="--accent-color:${sevColor(f.severity)}">
+        <div class="security-finding-hdr">
+          ${sevBadge(f.severity)}
+          <span class="security-finding-desc">${esc(f.description)}</span>
+          <button class="allow-btn" onclick="allowFromFinding(${escAttr(f.source)}, ${escAttr(f.detail)})" title="Suppress this process from future findings">Allow</button>
+        </div>
+        ${f.detail ? `<div class="security-finding-detail">${esc(f.detail)}</div>` : ''}
+      </div>
+    `).join('') : '<div class="card" style="color:var(--text-muted);font-size:12px">No suspicious findings' + (showInfo ? '' : ' at or above low severity') + '.</div>';
+  }
+
+  // Flagged listeners
+  const listenersEl = $('security-listeners-list');
+  if (listenersEl) {
+    const fl = sec.flagged_listeners || [];
+    listenersEl.innerHTML = fl.length ? fl.map(l => `
+      <div class="card security-finding" style="--accent-color:var(--orange)">
+        <div class="security-finding-hdr">
+          <span class="sev-badge medium">${esc(l.label)}</span>
+          <span class="security-finding-desc">Port ${l.port} — ${esc(l.proc || 'unknown process')} (PID ${l.pid ?? '—'})</span>
+          ${l.known_local_service ? '<span style="font-size:9px;color:var(--text-muted)">known local service</span>' : ''}
+          <button class="allow-btn" onclick="allowlistAdd({port: ${l.port}})" title="Suppress this port from future findings">Allow</button>
+        </div>
+        <div class="security-finding-detail">Listening on ${esc(l.iface || '*')}:${l.port}</div>
+      </div>
+    `).join('') : '<div class="card" style="color:var(--text-muted);font-size:12px">No listening ports match known C2/backdoor port numbers.</div>';
+  }
+
+  // Allowlist
+  await refreshAllowlist();
+}
+
+function sevColor(sev) {
+  return sev === 'critical' || sev === 'high' ? 'var(--red)'
+       : sev === 'medium' ? 'var(--orange)'
+       : sev === 'low' ? 'var(--yellow)'
+       : 'var(--text-muted)';
+}
+
+function escAttr(s) {
+  return JSON.stringify(s || '');
+}
+
+async function refreshAllowlist() {
+  const al = await api('security/allowlist');
+  if (!al) return;
+  const el = $('security-allowlist-list');
+  if (!el) return;
+  const chips = [];
+  (al.ports || []).forEach(p => chips.push({ type: 'port', label: 'port ' + p, value: p }));
+  (al.procs || []).forEach(p => chips.push({ type: 'proc', label: 'proc ' + p, value: p }));
+  (al.networks || []).forEach(n => chips.push({ type: 'network', label: n, value: n }));
+  el.innerHTML = chips.length
+    ? chips.map(c => `<span class="allowlist-chip">${esc(c.label)}<button onclick="removeAllowlistEntry('${c.type}', ${escAttr(c.value)})" title="Remove">✕</button></span>`).join('')
+    : '<span style="color:var(--text-muted);font-size:11px">No allowlist entries yet.</span>';
+}
+
+async function allowlistAdd(body) {
+  const r = await apiJson('security/allowlist', 'POST', body);
+  if (r && r.success) {
+    toast('Added to security allowlist', 'success');
+    refreshSecurity();
+  } else {
+    toast((r && r.error) || 'Failed to update allowlist', 'error');
+  }
+}
+
+function allowFromFinding(source, detail) {
+  // Best-effort: pull a process name out of the finding's source path
+  let proc = source || '';
+  if (proc.includes('/')) proc = proc.split('/').pop();
+  if (!proc) { toast('No process name to allowlist for this finding', 'error'); return; }
+  allowlistAdd({ proc: proc });
+}
+
+async function addAllowlistEntry() {
+  const port = $('allowlist-add-port').value.trim();
+  const proc = $('allowlist-add-proc').value.trim();
+  const network = $('allowlist-add-network').value.trim();
+  if (!port && !proc && !network) { toast('Enter a port, process name, or network', 'error'); return; }
+  const body = {};
+  if (port) body.port = port;
+  if (proc) body.proc = proc;
+  if (network) body.network = network;
+  const r = await apiJson('security/allowlist', 'POST', body);
+  if (r && r.success) {
+    $('allowlist-add-port').value = '';
+    $('allowlist-add-proc').value = '';
+    $('allowlist-add-network').value = '';
+    toast('Allowlist updated', 'success');
+    refreshSecurity();
+  } else {
+    toast((r && r.error) || 'Failed to update allowlist', 'error');
+  }
+}
+
+async function removeAllowlistEntry(type, value) {
+  const body = {};
+  body[type] = value;
+  const r = await apiJson('security/allowlist', 'DELETE', body);
+  if (r && r.success) {
+    toast('Removed from allowlist', 'success');
+    refreshSecurity();
+  } else {
+    toast((r && r.error) || 'Failed to remove entry', 'error');
+  }
+}
+
+async function runSecurityScan() {
+  const btn = $('security-scan-btn');
+  const resultsEl = $('security-scan-results');
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  resultsEl.innerHTML = '';
+  try {
+    const r = await apiJson('security/scan', 'POST', {});
+    if (r && r.success) {
+      const findings = r.findings || [];
+      toast(`Scan complete — ${findings.length} finding(s)`, findings.length ? 'warning' : 'success');
+      resultsEl.innerHTML = findings.length ? findings.map(f => `
+        <div class="card security-finding" style="--accent-color:${sevColor(f.severity)}">
+          <div class="security-finding-hdr">${sevBadge(f.severity)}<span class="security-finding-desc">${esc(f.description)}</span></div>
+          <div class="security-finding-detail">${esc(f.source)}${f.line ? ':' + f.line : ''} — ${esc(f.detail || '')}</div>
+        </div>
+      `).join('') : '<div class="card" style="color:var(--text-muted);font-size:12px">No findings.</div>';
+    } else {
+      toast((r && r.error) || 'Scan failed', 'error');
+      resultsEl.innerHTML = `<div class="card" style="color:var(--text-muted);font-size:12px">${esc((r && r.error) || 'Scan failed')}</div>`;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Static Scan';
+  }
+}
+
+// ── Logs ──
+async function refreshLogs() {
+  const includeSystem = $('log-system-toggle') && $('log-system-toggle').checked;
+  const endpoint = includeSystem ? 'logs?limit=100&system=true' : 'logs?limit=100';
+  const logs = await api(endpoint);
+  if (!logs) return;
+  const area = $('log-area');
+  area.innerHTML = logs.map(function(l) {
+    return '<div><span class="log-ts">[' + esc(l.ts) + ']</span> <span class="log-' + (l.level || 'info') + '">' + esc(l.msg) + '</span></div>';
+  }).join('') + '<span class="cursor-blink" style="color:var(--green)">▌</span>';
+  area.scrollTop = area.scrollHeight;
+}
+
+// ── Service Actions ──
+async function svcAction(name, action) {
+  const r = await apiPost(`services/${name}/${action}`);
+  if (r && r.success) {
+    toast(`${action.charAt(0).toUpperCase()+action.slice(1)}ed ${name}`, 'success');
+    setTimeout(refreshTab, 400);
+  } else {
+    toast(`Failed: ${r?.stderr || r?.error || 'unknown'}`, 'error');
+  }
+}
+
+// ── Service CRUD ──
+async function apiJson(path, method, body) {
+  try {
+    const r = await fetch('/api/' + path, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function toggleAddService() {
+  const form = $('svc-add-form');
+  const inp = $('svc-add-input');
+  const show = !form.classList.contains('show');
+  form.classList.toggle('show', show);
+  if (show) { inp.value = ''; inp.focus(); }
+}
+
+async function addService() {
+  const inp = $('svc-add-input');
+  const name = inp.value.trim();
+  if (!name) { inp.focus(); return; }
+  const r = await apiJson('services/config', 'POST', { name });
+  if (r && r.success) {
+    toast(`Added ${name} to monitor list`, 'success');
+    toggleAddService();
+    setTimeout(refreshTab, 300);
+  } else {
+    toast(r?.error || 'Failed to add service', 'error');
+  }
+}
+
+async function addServiceForPort(port, protocol) {
+  const name = prompt(`Enter service name for port ${port}/${protocol}:`, '');
+  if (!name || !name.trim()) return;
+  const r = await apiJson('services/config', 'POST', { name: name.trim() });
+  if (r && r.success) {
+    toast(`Added ${name.trim()} to monitor list`, 'success');
+    setTimeout(refreshTab, 300);
+  } else {
+    toast(r?.error || 'Failed to add service', 'error');
+  }
+}
+
+function confirmRemoveService(name) {
+  pendingPower = null;
+  _pendingRemoveSvc = name;
+  $('modal').classList.add('show');
+  $('modal-icon').textContent = '✕';
+  $('modal-title').textContent = 'Remove Service';
+  $('modal-msg').textContent = `Remove "${name}" from the monitored list? This does not stop the service.`;
+  const btn = $('modal-yes');
+  btn.textContent = 'Remove';
+  btn.style.background = '#2a1414';
+  btn.style.color = 'var(--red)';
+  btn.style.borderColor = '#4a2020';
+  btn.onclick = execRemoveService;
+}
+let _pendingRemoveSvc = null;
+
+async function execRemoveService() {
+  const name = _pendingRemoveSvc;
+  if (!name) return;
+  hideModal();
+  _pendingRemoveSvc = null;
+  const r = await fetch('/api/services/config/' + encodeURIComponent(name), { method: 'DELETE' });
+  const data = await r.json().catch(() => null);
+  if (data && data.success) {
+    toast(`Removed ${name}`, 'warning');
+    setTimeout(refreshTab, 300);
+  } else {
+    toast(data?.error || 'Failed to remove', 'error');
+  }
+}
+
+function startEditService(name) {
+  const info = $('svc-info-' + name);
+  if (!info) return;
+  info.innerHTML = `
+    <div class="svc-edit-row">
+      <input class="svc-edit-input" id="svc-edit-val-${name}" value="${esc(name)}" spellcheck="false"
+        onkeydown="if(event.key==='Enter')saveEditService('${name}');if(event.key==='Escape')refreshTab()">
+      <button class="svc-form-btn save" style="padding:5px 8px;font-size:10px" onclick="saveEditService('${name}')">Save</button>
+      <button class="svc-form-btn cancel" style="padding:5px 8px;font-size:10px" onclick="refreshTab()">✕</button>
+    </div>`;
+  const inp = $('svc-edit-val-' + name);
+  if (inp) { inp.focus(); inp.select(); }
+}
+
+async function saveEditService(oldName) {
+  const inp = $('svc-edit-val-' + oldName);
+  if (!inp) return;
+  const newName = inp.value.trim();
+  if (!newName || newName === oldName) { refreshTab(); return; }
+  const r = await apiJson('services/config/' + encodeURIComponent(oldName), 'PUT', { name: newName });
+  if (r && r.success) {
+    toast(`Renamed ${oldName} → ${newName}`, 'success');
+    setTimeout(refreshTab, 300);
+  } else {
+    toast(r?.error || 'Rename failed', 'error');
+  }
+}
+
+// ── Kill Process ──
+async function killProc(pid, name) {
+  if (!confirm(`Kill PID ${pid} (${name})?`)) return;
+  const r = await apiDelete(`processes/${pid}?signal=15`);
+  if (r && r.success) {
+    toast(`Killed PID ${pid}`, 'warning');
+    setTimeout(refreshTab, 500);
+  } else {
+    toast(`Kill failed: ${r?.error || 'unknown'}`, 'error');
+  }
+}
+
+// ── Power Controls ──
+function confirmPower(action) {
+  pendingPower = action;
+  _pendingRemoveSvc = null;
+  $('modal').classList.add('show');
+  $('modal-icon').textContent = action === 'reboot' ? '↻' : '⏻';
+  $('modal-title').textContent = 'Confirm ' + (action === 'reboot' ? 'Reboot' : 'Shutdown');
+  $('modal-msg').textContent = 'This will ' + action + ' the device immediately.';
+  const btn = $('modal-yes');
+  btn.textContent = action === 'reboot' ? 'Reboot' : 'Shutdown';
+  btn.style.background = action === 'reboot' ? '#2e2a1a' : '#2a1414';
+  btn.style.color = action === 'reboot' ? 'var(--orange)' : 'var(--red)';
+  btn.style.borderColor = action === 'reboot' ? '#4a3a1a' : '#4a2020';
+  btn.onclick = execPower;
+}
+function hideModal() { $('modal').classList.remove('show'); pendingPower = null; _pendingRemoveSvc = null; }
+async function execPower() {
+  if (!pendingPower) return;
+  hideModal();
+  toast((pendingPower === 'reboot' ? 'Rebooting' : 'Shutting down') + '…', 'warning');
+  await apiPost('power/' + pendingPower);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Init + Polling
+// ════════════════════════════════════════════════════════════════════════
+async function init() {
+  await refreshStatus();
+  await refreshTab();
+  await refreshLLM();
+  await refreshSecurity();
+  setInterval(refreshStatus, REFRESH);
+  setInterval(refreshTab, REFRESH * 3);
+  // LLM probes make live HTTP calls to each candidate port, so poll less
+  // frequently than the main status/tab refreshes.
+  setInterval(refreshLLM, Math.max(REFRESH * 4, 8000));
+  // Security scoring runs `ss` + connection scoring every cycle — same
+  // cadence as LLM detection is a good balance of freshness vs. overhead.
+  setInterval(refreshSecurity, Math.max(REFRESH * 4, 8000));
+}
+</script>
+</body>
+</html>
