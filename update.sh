@@ -183,7 +183,7 @@ run_install() {
 
   # Find extracted directory (sys-monitor-<version>/ or sys-monitor-<tag>/)
   local extract_dir
-  extract_dir=$(find "$WORK_DIR" -maxdepth 1 -type d -name "sys-monitor-*" | head -1)
+  extract_dir=$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d -name "sys-monitor-*" | head -1)
   [[ -n "$extract_dir" ]] || die "Could not find extracted directory in $WORK_DIR"
 
   info "Running install.sh ${install_flags[*]:-}..."
