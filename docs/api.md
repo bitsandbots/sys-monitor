@@ -410,24 +410,28 @@ Return the current allowlist.
 ```
 
 #### `POST /api/security/allowlist`
-Add an allowlist entry. Body shape is roughly `{"type": "port"|"proc"|"network", "value": ...}` — see the route in `sys_monitor.py` for the exact accepted fields.
+Add an allowlist entry. Body may include any combination of `port` (int or numeric string), `proc` (process name, matched case-insensitively), and `network` (IP or CIDR) — at least one field is required; all provided fields are added in the same request.
 
 ```bash
 curl -X POST http://node:8585/api/security/allowlist \
   -H "Content-Type: application/json" \
-  -d '{"type": "port", "value": 1234}'
+  -d '{"port": 1234}'
 ```
 
 ```json
-{"success": true, "allowlist": {"procs": [], "ports": [1234], "networks": [], "url_domains": []}}
+{"success": true, "added": ["port 1234"]}
 ```
+
+Errors return `400` with `{"success": false, "error": "..."}` — for an invalid `port`, invalid `network` (not a valid IP/CIDR), no recognized field provided, or hiddenscope unavailable.
 
 #### `DELETE /api/security/allowlist`
-Remove an allowlist entry (same body shape as `POST`).
+Remove an allowlist entry (same body shape as `POST`: `port`, `proc`, and/or `network`).
 
 ```json
-{"success": true, "allowlist": {"procs": [], "ports": [], "networks": [], "url_domains": []}}
+{"success": true, "removed": ["port 1234"]}
 ```
+
+Returns `404` with `{"success": false, "error": "entry not found"}` if nothing in the body matched an existing entry; `400` if hiddenscope is unavailable.
 
 Allowlist changes persist to `HIDDENSCOPE_ALLOWLIST_FILE` (default `./hiddenscope_allowlist.json`).
 

@@ -255,8 +255,8 @@ Full hiddenscope security status — findings, actionable count, flagged listene
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/security/allowlist` | Return the current allowlist (`procs`, `ports`, `networks`, `url_domains`) |
-| `POST` | `/api/security/allowlist` | Add an entry, e.g. `{"type": "port", "value": 1234}` |
-| `DELETE` | `/api/security/allowlist` | Remove an entry (same body shape) |
+| `POST` | `/api/security/allowlist` | Add an entry, e.g. `{"port": 1234}` — `port`/`proc`/`network` are all accepted, any combination in one request. Returns `{"success": true, "added": [...]}` |
+| `DELETE` | `/api/security/allowlist` | Remove an entry (same body shape as `POST`). Returns `{"success": true, "removed": [...]}` |
 
 Persists to `HIDDENSCOPE_ALLOWLIST_FILE` (default `./hiddenscope_allowlist.json`).
 
