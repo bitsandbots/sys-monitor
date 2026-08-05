@@ -639,6 +639,28 @@ Update a node's label or token.
 
 ---
 
+### Alerting
+
+Not a route — outbound only. When `SYSHUB_ALERT_WEBHOOK_URL` is set, the Hub `POST`s a JSON payload to that URL once per state transition it detects during polling (not on every poll cycle while a condition remains active, and not at all while the env var is unset — this is opt-in).
+
+Events: `node_offline` / `node_online`, `temperature_alert` / `temperature_recovered`, `power_alert` / `power_recovered`, `security_alert` / `security_recovered`. The `power` and `security` alerts fire off the same `temperature_status` / `power_status` / `security.actionable_count` fields documented under the node agent's [`GET /api/status`](#get-apistatus) and [`GET /api/security`](#get-apisecurity) above — the Hub doesn't recompute thresholds, it just watches values it already polls for transitions.
+
+```json
+{
+  "event": "node_offline",
+  "node_id": "192-168-1-42-8585",
+  "node_label": "Node-A",
+  "host": "192.168.1.42:8585",
+  "timestamp": "2026-08-05T21:30:00",
+  "message": "Node Node-A is now offline",
+  "detail": {}
+}
+```
+
+`detail` carries event-specific extra fields where relevant (e.g. `{"level": "critical"}` for a temperature alert, `{"actionable_count": 2}` for a security alert) — empty object otherwise. Delivery failures (unreachable/slow receiver) are swallowed silently, same as the Hub's node-polling HTTP calls — a broken webhook receiver never stalls fleet polling.
+
+---
+
 ### Discovery
 
 #### `POST /api/discover`
