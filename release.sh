@@ -140,8 +140,9 @@ if ! $DRY; then
     --exclude='.env' \
     "${RELEASE_FILES[@]}"
 
-  # Checksum
-  sha256sum "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
+  # Checksum — reference the archive by basename only, since update.sh verifies
+  # it from a bare temp dir containing just the downloaded tarball
+  (cd "$DIST_DIR" && sha256sum "${ARCHIVE_NAME}.tar.gz") > "$CHECKSUM_PATH"
   ok "Archive  : $ARCHIVE_PATH ($(du -sh "$ARCHIVE_PATH" | cut -f1))"
   ok "Checksum : $CHECKSUM_PATH"
 else
