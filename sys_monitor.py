@@ -34,7 +34,7 @@ from flask import Flask, jsonify, render_template, request, abort
 
 app = Flask(__name__)
 
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Configuration
