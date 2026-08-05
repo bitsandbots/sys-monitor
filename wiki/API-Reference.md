@@ -413,6 +413,18 @@ Cached snapshot of all registered nodes.
 | `DELETE` | `/api/nodes/<nid>` | Remove a node |
 | `PUT` | `/api/nodes/<nid>` | Update label or token |
 
+### Alerting
+
+Not a route — outbound only. Set `SYSHUB_ALERT_WEBHOOK_URL` to have the Hub `POST` a JSON payload once per state transition it detects during polling (online↔offline, temperature/power/security alert↔recovered). Unset by default (disabled).
+
+Events: `node_offline`/`node_online`, `temperature_alert`/`temperature_recovered`, `power_alert`/`power_recovered`, `security_alert`/`security_recovered`.
+
+```json
+{"event": "node_offline", "node_id": "192-168-1-42-8585", "node_label": "Node-A", "host": "192.168.1.42:8585", "timestamp": "2026-08-05T21:30:00", "message": "Node Node-A is now offline", "detail": {}}
+```
+
+Delivery failures are swallowed silently — a broken webhook receiver never stalls fleet polling.
+
 ### `POST /api/discover`
 Scan the local /24 subnet for SysMonitor agents.
 

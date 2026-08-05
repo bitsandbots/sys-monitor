@@ -45,6 +45,7 @@ HUB_CONFIG = {
     "poll_interval": int(os.getenv("SYSHUB_POLL_INTERVAL", "5")),
     "request_timeout": int(os.getenv("SYSHUB_TIMEOUT", "4")),
     "discovery_port": int(os.getenv("SYSHUB_DISCOVERY_PORT", "8585")),
+    "alert_webhook_url": os.getenv("SYSHUB_ALERT_WEBHOOK_URL", ""),
 }
 
 _NODES_FILE = Path(
@@ -88,6 +89,12 @@ def _load_nodes():
                             "last_seen": None,
                             "boot": None,
                             "status": None,
+                            "_alert_state": {
+                                "online": False,
+                                "temp_level": "normal",
+                                "security_alert": False,
+                                "power_alert": False,
+                            },
                         }
         except (json.JSONDecodeError, OSError, KeyError):
             pass
@@ -128,6 +135,12 @@ def _add_node(host, port=8585, label="", token=""):
             "last_seen": None,
             "boot": None,
             "status": None,
+            "_alert_state": {
+                "online": False,
+                "temp_level": "normal",
+                "security_alert": False,
+                "power_alert": False,
+            },
         }
     _save_nodes()
     return nid, True
@@ -190,6 +203,115 @@ def _fetch_node(node, path, method="GET", json_body=None, timeout=None):
         return None
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Alerting
+# ═══════════════════════════════════════════════════════════════════════════
+def _send_webhook(event, node, message, detail=None):
+    """POST an alert event to HUB_CONFIG['alert_webhook_url']. No-op if unset.
+
+    Delivery failures are swallowed, matching _fetch_node's convention —
+    a slow/unreachable webhook receiver must never stall the poller.
+    """
+    url = HUB_CONFIG["alert_webhook_url"]
+    if not url:
+        return
+    payload = {
+        "event": event,
+        "node_id": node.get("id"),
+        "node_label": node.get("label") or node.get("id"),
+        "host": f"{node.get('host')}:{node.get('port')}",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "message": message,
+        "detail": detail or {},
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except requests.RequestException:
+        pass
+
+
+def _check_alerts(nid, online, status=None, security=None):
+    """Compare this cycle's signals against the node's last-known alert
+    state and fire a webhook once per transition (not every poll cycle
+    while a condition remains active). status/security being None means
+    that sub-fetch failed or wasn't attempted this cycle -- skip those
+    checks entirely rather than risk a false "recovered" from a transient
+    fetch failure on an otherwise-online node.
+    """
+    with _nodes_lock:
+        node = _nodes.get(nid)
+        if not node:
+            return
+        alert_state = node.setdefault(
+            "_alert_state",
+            {
+                "online": False,
+                "temp_level": "normal",
+                "security_alert": False,
+                "power_alert": False,
+            },
+        )
+        prev_online = alert_state["online"]
+        prev_temp_level = alert_state["temp_level"]
+        prev_power_alert = alert_state["power_alert"]
+        prev_security_alert = alert_state["security_alert"]
+        snapshot = dict(node)
+
+    label = snapshot.get("label") or nid
+
+    if online != prev_online:
+        event = "node_online" if online else "node_offline"
+        _send_webhook(event, snapshot, f"Node {label} is now {'online' if online else 'offline'}")
+        with _nodes_lock:
+            if nid in _nodes:
+                _nodes[nid]["_alert_state"]["online"] = online
+
+    if not online:
+        return
+
+    if status is not None:
+        temp_status = status.get("temperature_status") or {}
+        temp_level = temp_status.get("level", "normal")
+        if temp_level != prev_temp_level:
+            if temp_level != "normal":
+                msg = temp_status.get("message", f"Node {label} temperature level: {temp_level}")
+                _send_webhook("temperature_alert", snapshot, msg, {"level": temp_level})
+            else:
+                _send_webhook("temperature_recovered", snapshot, f"Node {label} temperature back to normal")
+            with _nodes_lock:
+                if nid in _nodes:
+                    _nodes[nid]["_alert_state"]["temp_level"] = temp_level
+
+        power = status.get("power_status") or {}
+        power_bad = bool(power.get("undervoltage_now") or power.get("frequency_capped_now"))
+        if power_bad != prev_power_alert:
+            if power_bad:
+                reason = "undervoltage" if power.get("undervoltage_now") else "CPU frequency capped (thermal throttle)"
+                _send_webhook("power_alert", snapshot, f"Power issue on {label}: {reason}", power)
+            else:
+                _send_webhook("power_recovered", snapshot, f"Power issue on {label} resolved")
+            with _nodes_lock:
+                if nid in _nodes:
+                    _nodes[nid]["_alert_state"]["power_alert"] = power_bad
+
+    if security is not None:
+        actionable = security.get("actionable_count", 0)
+        security_bad = actionable > 0
+        if security_bad != prev_security_alert:
+            if security_bad:
+                _send_webhook(
+                    "security_alert",
+                    snapshot,
+                    f"{actionable} actionable security finding(s) on {label}",
+                    {"actionable_count": actionable},
+                )
+            else:
+                _send_webhook("security_recovered", snapshot, f"Security findings on {label} cleared")
+            with _nodes_lock:
+                if nid in _nodes:
+                    _nodes[nid]["_alert_state"]["security_alert"] = security_bad
+
+
 def _poll_node(nid):
     """Poll a single node for status + boot info. Updates state in-place."""
     with _nodes_lock:
@@ -203,6 +325,7 @@ def _poll_node(nid):
         with _nodes_lock:
             if nid in _nodes:
                 _nodes[nid]["online"] = False
+        _check_alerts(nid, online=False)
         return
 
     # Fetch status (fast-changing metrics)
@@ -231,6 +354,8 @@ def _poll_node(nid):
                 _nodes[nid]["llm"] = llm
             if security is not None:
                 _nodes[nid]["security"] = security
+
+    _check_alerts(nid, online=True, status=status, security=security)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -660,6 +785,7 @@ if __name__ == "__main__":
   Nodes:      {node_count} registered
   Polling:    every {HUB_CONFIG['poll_interval']}s
   Auth:       {'ENABLED' if HUB_CONFIG['auth_token'] else 'DISABLED'}
+  Webhook:    {'ENABLED' if HUB_CONFIG['alert_webhook_url'] else 'DISABLED'}
 \033[36m╚══════════════════════════════════════════════════════════════╝\033[0m
 """)
 
