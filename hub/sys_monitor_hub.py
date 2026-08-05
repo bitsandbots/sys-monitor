@@ -23,6 +23,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from functools import wraps
 from ipaddress import IPv4Network
 from pathlib import Path
 
@@ -390,6 +391,24 @@ def _serialize_node(n):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Auth Middleware
+# ═══════════════════════════════════════════════════════════════════════════
+def require_auth(f):
+    """Optional bearer-token authentication."""
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = HUB_CONFIG["auth_token"]
+        if token:
+            auth = request.headers.get("Authorization", "")
+            if auth != f"Bearer {token}":
+                abort(401, description="Unauthorized")
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 @app.route("/")
@@ -400,6 +419,7 @@ def index():
 
 # ── Fleet Overview ──
 @app.route("/api/fleet")
+@require_auth
 def api_fleet():
     """All nodes with latest cached status."""
     nodes = _get_all_nodes()
@@ -417,6 +437,7 @@ def api_fleet():
 
 # ── Node CRUD ──
 @app.route("/api/nodes", methods=["POST"])
+@require_auth
 def api_add_node():
     data = request.get_json(silent=True) or {}
     host = data.get("host", "").strip()
@@ -439,6 +460,7 @@ def api_add_node():
 
 
 @app.route("/api/nodes/<nid>", methods=["DELETE"])
+@require_auth
 def api_remove_node(nid):
     if _remove_node(nid):
         return jsonify({"success": True})
@@ -446,6 +468,7 @@ def api_remove_node(nid):
 
 
 @app.route("/api/nodes/<nid>", methods=["PUT"])
+@require_auth
 def api_update_node(nid):
     data = request.get_json(silent=True) or {}
     with _nodes_lock:
@@ -462,6 +485,7 @@ def api_update_node(nid):
 
 # ── Discovery ──
 @app.route("/api/discover", methods=["POST"])
+@require_auth
 def api_discover():
     data = request.get_json(silent=True) or {}
     subnet = (data.get("subnet") or "").strip() or None
@@ -472,6 +496,7 @@ def api_discover():
 
 # ── Proxy: fetch data from a specific node ──
 @app.route("/api/nodes/<nid>/status")
+@require_auth
 def api_node_status(nid):
     node = _get_node(nid)
     if not node:
@@ -481,6 +506,7 @@ def api_node_status(nid):
 
 
 @app.route("/api/nodes/<nid>/boot")
+@require_auth
 def api_node_boot(nid):
     node = _get_node(nid)
     if not node:
@@ -490,6 +516,7 @@ def api_node_boot(nid):
 
 
 @app.route("/api/nodes/<nid>/llm")
+@require_auth
 def api_node_llm(nid):
     """Proxy a node's LLM-serving detection (ports + models, if any)."""
     node = _get_node(nid)
@@ -500,6 +527,7 @@ def api_node_llm(nid):
 
 
 @app.route("/api/nodes/<nid>/security")
+@require_auth
 def api_node_security(nid):
     """Proxy a node's hiddenscope security status (findings, flagged listeners)."""
     node = _get_node(nid)
@@ -510,6 +538,7 @@ def api_node_security(nid):
 
 
 @app.route("/api/nodes/<nid>/security/allowlist", methods=["POST"])
+@require_auth
 def api_node_security_allowlist_add(nid):
     """Proxy adding an entry to a node's security allowlist."""
     node = _get_node(nid)
@@ -520,6 +549,7 @@ def api_node_security_allowlist_add(nid):
 
 
 @app.route("/api/nodes/<nid>/services")
+@require_auth
 def api_node_services(nid):
     node = _get_node(nid)
     if not node:
@@ -529,6 +559,7 @@ def api_node_services(nid):
 
 
 @app.route("/api/nodes/<nid>/services/<svc>/<action>", methods=["POST"])
+@require_auth
 def api_node_service_action(nid, svc, action):
     node = _get_node(nid)
     if not node:
@@ -538,6 +569,7 @@ def api_node_service_action(nid, svc, action):
 
 
 @app.route("/api/nodes/<nid>/storage")
+@require_auth
 def api_node_storage(nid):
     node = _get_node(nid)
     if not node:
@@ -547,6 +579,7 @@ def api_node_storage(nid):
 
 
 @app.route("/api/nodes/<nid>/processes")
+@require_auth
 def api_node_processes(nid):
     node = _get_node(nid)
     if not node:
@@ -556,6 +589,7 @@ def api_node_processes(nid):
 
 
 @app.route("/api/nodes/<nid>/network")
+@require_auth
 def api_node_network(nid):
     node = _get_node(nid)
     if not node:
@@ -565,6 +599,7 @@ def api_node_network(nid):
 
 
 @app.route("/api/nodes/<nid>/logs")
+@require_auth
 def api_node_logs(nid):
     node = _get_node(nid)
     if not node:
@@ -574,6 +609,7 @@ def api_node_logs(nid):
 
 
 @app.route("/api/nodes/<nid>/power/<action>", methods=["POST"])
+@require_auth
 def api_node_power(nid, action):
     node = _get_node(nid)
     if not node:
