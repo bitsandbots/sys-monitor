@@ -215,6 +215,17 @@ def require_auth(f):
     return decorated
 
 
+@app.before_request
+def _csrf_guard():
+    """Reject cross-origin state-changing requests (CSRF via a plain form POST)."""
+    if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
+        return
+    expected = f"{request.scheme}://{request.host}"
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if source and not source.startswith(expected):
+        abort(403, description="Cross-origin request blocked")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Low-level Helpers
 # ═══════════════════════════════════════════════════════════════════════════
