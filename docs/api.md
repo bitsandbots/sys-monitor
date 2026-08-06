@@ -243,6 +243,8 @@ Return the current persisted service list as a bare array.
 ["ssh", "nginx", "docker"]
 ```
 
+> `POST`/`DELETE`/`PUT` below mutate this list (add/remove/rename which units are monitored, distinct from controlling one that's already on it). If `SYSMONITOR_CONFIG_TOKEN` is set, all three additionally require an `X-Config-Token: <config-token>` header **on top of** the regular `Authorization: Bearer <token>` — a separate header, since a single request can't carry two different values in one `Authorization` header. A caller who can `start`/`stop`/`restart` an already-whitelisted service via `POST /api/services/<name>/<action>` can't add a new one to control unless they also hold the config token. Unset (default): no change from the single-token model.
+
 #### `POST /api/services/config`
 Add a service to the monitored list.
 

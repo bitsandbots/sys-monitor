@@ -194,9 +194,11 @@ curl -X POST http://ubuntu-server:8585/api/services/nginx/restart
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/services/config` | Return current service list |
-| `POST` | `/api/services/config` | Add a service `{"name":"myapp"}` |
-| `DELETE` | `/api/services/config/<name>` | Remove a service |
-| `PUT` | `/api/services/config/<name>` | Rename `{"name":"new-name"}` |
+| `POST` | `/api/services/config` | Add a service `{"name":"myapp"}` — requires `SYSMONITOR_CONFIG_TOKEN` too if set |
+| `DELETE` | `/api/services/config/<name>` | Remove a service — requires `SYSMONITOR_CONFIG_TOKEN` too if set |
+| `PUT` | `/api/services/config/<name>` | Rename `{"name":"new-name"}` — requires `SYSMONITOR_CONFIG_TOKEN` too if set |
+
+`SYSMONITOR_CONFIG_TOKEN` (optional, unset by default) gates only the three mutating rows above, via a separate `X-Config-Token` header on top of the regular `Authorization` token (two different headers, since one request can't carry two different `Authorization` values). Reading the list and controlling an already-whitelisted service via `POST /api/services/<name>/<action>` are unaffected.
 
 ---
 

@@ -44,6 +44,7 @@ CONFIG = {
     "port": int(os.getenv("SYSMONITOR_PORT", "8585")),
     "debug": os.getenv("SYSMONITOR_DEBUG", "false").lower() == "true",
     "auth_token": os.getenv("SYSMONITOR_TOKEN", ""),
+    "config_token": os.getenv("SYSMONITOR_CONFIG_TOKEN", ""),
     "services": [
         s.strip()
         for s in os.getenv(
@@ -210,6 +211,32 @@ def require_auth(f):
             auth = request.headers.get("Authorization", "")
             if auth != f"Bearer {token}":
                 abort(401, description="Unauthorized")
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+def require_config_auth(f):
+    """Optional second bearer-token check for routes that mutate the
+    monitored-services allowlist itself (not routes that merely control an
+    already-whitelisted service). Stacks on top of require_auth rather than
+    replacing it -- setting SYSMONITOR_CONFIG_TOKEN alone adds a second gate
+    without weakening the first. Unset (default) = no behavior change from
+    the single-token model.
+
+    Uses a distinct X-Config-Token header rather than Authorization: a
+    caller needs to present both the regular token (Authorization) and this
+    one in the same request when both are configured, which isn't possible
+    if they share one header -- HTTP only carries one Authorization value.
+    """
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = CONFIG["config_token"]
+        if token:
+            supplied = request.headers.get("X-Config-Token", "")
+            if supplied != token:
+                abort(401, description="Unauthorized (config token required)")
         return f(*args, **kwargs)
 
     return decorated
@@ -1490,6 +1517,7 @@ def api_services_config():
 
 @app.route("/api/services/config", methods=["POST"])
 @require_auth
+@require_config_auth
 def api_services_add():
     """Add a service to the monitored list."""
     data = request.get_json(silent=True) or {}
@@ -1511,6 +1539,7 @@ def api_services_add():
 
 @app.route("/api/services/config/<svc>", methods=["DELETE"])
 @require_auth
+@require_config_auth
 def api_services_remove(svc):
     """Remove a service from the monitored list."""
     if svc not in CONFIG["services"]:
@@ -1523,6 +1552,7 @@ def api_services_remove(svc):
 
 @app.route("/api/services/config/<svc>", methods=["PUT"])
 @require_auth
+@require_config_auth
 def api_services_rename(svc):
     """Rename/replace a service entry in the monitored list."""
     data = request.get_json(silent=True) or {}
@@ -1803,6 +1833,7 @@ if __name__ == "__main__":
   Kernel:   {info['kernel']}
   OS:       {info['os']}
   Auth:     {'ENABLED' if CONFIG['auth_token'] else 'DISABLED'}
+  Config token: {'ENABLED' if CONFIG['config_token'] else 'DISABLED'}
   Security: {'hiddenscope active' if HIDDENSCOPE_AVAILABLE else 'hiddenscope unavailable'}
   Services: {len(CONFIG['services'])} configured
   Listen:   http://{CONFIG['host']}:{CONFIG['port']}
