@@ -75,7 +75,7 @@ Browser
 ## Hub — Data Flow
 
 1. At startup, `_load_nodes()` restores the node registry from `hub_nodes.json`.
-2. `_start_poller()` launches a background thread that calls `_poll_node()` for every registered node on `SYSHUB_POLL_INTERVAL` (default 5s) using a `ThreadPoolExecutor(max_workers=min(node_count, 8))`.
+2. `_start_poller()` launches a background thread that calls `_poll_node()` for every registered node on `SYSHUB_POLL_INTERVAL` (default 5s) using a `ThreadPoolExecutor(max_workers=min(node_count, SYSHUB_POLL_MAX_WORKERS))` — `SYSHUB_POLL_MAX_WORKERS` defaults to 32 (matching the discovery scan's own worker count below) and is operator-tunable for larger fleets.
 3. Poll results are cached in the in-memory `_nodes` dict under a `_lock`.
 4. Browser requests `/api/fleet` — returns the cached snapshot for all nodes instantly.
 5. Proxy routes (e.g. `/api/nodes/<nid>/services`) forward to the corresponding node's API via `_fetch_node()` with per-request timeouts.
