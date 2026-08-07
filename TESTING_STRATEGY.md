@@ -17,16 +17,23 @@
 |---|---|---|
 | 1 | `/proc` parsing (CPU/memory/uptime) | **Done** — `tests/test_proc_parsing.py` |
 | 2 | LLM-detection probing (mocked HTTP) | **Done** — `tests/test_llm_detection.py` |
-| 3 | hiddenscope integration glue | Deferred — follow-up PR |
-| 4 | `hiddenscope_scanner.py` internals | Deferred — follow-up PR (lowest priority per the doc itself) |
+| 3 | hiddenscope integration glue | **Done** — `tests/test_hiddenscope_glue.py` |
+| 4 | `hiddenscope_scanner.py` internals | **Partially done** — allowlist matching + severity scoring only, see below |
 | 5 | Hub polling/proxy/aggregation logic | **Done** — `hub/tests/` |
 | 6 | Port-range regression guard (`_MAX_SCANNED_PORT`) | **Done** — `tests/test_llm_detection.py` |
 | 7 | CI running `py_compile`/tests on every change | **Done** — `.github/workflows/ci.yml` |
 | 8 | Pi vs. generic-PC `/proc` fixtures | **Done** — `tests/fixtures/proc/` |
 
-Items 3 and 4 cover the vendored `hiddenscope_scanner.py` and its integration glue in
-`sys_monitor.py` — deliberately out of scope to keep each pass one coherent, reviewable PR. Same
-pattern as every other change already shipped to this repo.
+**Item 4 is intentionally partial.** The gap analysis's own scope for this item was "allowlist
+matching and severity scoring are untested" — `tests/test_hiddenscope_allowlist_and_severity.py`
+covers exactly that (`AllowList.suppresses_conn`/`from_file`, `is_private`, `_sev`/`_sev_down`,
+`score_connection`), all pure logic with zero I/O. **Not covered**, and a separate, larger piece of
+work if ever picked up: `hiddenscope_scanner.py`'s static file/dependency secret-scanning
+(`scan_file`/`scan_tree`/`scan_deps` — regex + entropy detection), live connection/listener
+OS-parsing (`get_connections_ss`/`get_connections_psutil`/etc.), baseline diff, and its CLI. None
+of this is exercised anywhere, and it's the largest remaining surface in the whole repo by line
+count (`hiddenscope_scanner.py` is 2353 lines; everything tested against it so far is ~150 of
+those).
 
 **Two things explicitly not covered by item 5's "Done"**, noted rather than silently folded in:
 - `POST /api/nodes`'s fire-and-forget immediate-poll background thread (`hub/sys_monitor_hub.py`,
@@ -76,8 +83,10 @@ end-to-end in `hub/tests/test_poller.py` and `hub/tests/test_fleet_api.py` (gap-
 - Rule: no bugfix merges without a regression test reproducing the original bug. Concrete example
   already in the suite: `test_max_scanned_port_includes_ollama`.
 - No property-based/snapshot testing yet — the input space for the current test surface (fixed
-  `/proc` formats, fixed JSON API shapes) doesn't need it. Worth revisiting if `hiddenscope`
-  allowlist matching (item 4) gets covered, since that has a larger input space.
+  `/proc` formats, fixed JSON API shapes, `hiddenscope`'s allowlist matching/severity scoring) is
+  small and enumerable by hand. Worth revisiting if the file/dependency secret-scanning half of
+  `hiddenscope_scanner.py` (item 4's still-uncovered half) ever gets picked up — regex/entropy
+  detection over arbitrary file content is exactly the kind of larger input space this helps with.
 
 ## 5. Integration Contracts
 
@@ -94,9 +103,9 @@ fact, not a component of the shipped software the template's eval framework is m
 
 ## 7. Suite Trust: Mutation Testing & Flaky Test Management
 
-Not adopted yet. At the current coverage level (2 of 8 gap-analysis test areas), mutation testing
-would mostly measure gaps we already know about from the tracking table above — not worth the
-tooling overhead until coverage is broader. Revisit once items 3/4/5 land.
+Not adopted yet. 7 of 8 gap-analysis items are now done or partially done — mutation testing would
+still mostly measure the one known gap (item 4's file-scanning half) rather than surface anything
+new, so not worth the tooling overhead yet. Revisit if that half ever gets covered.
 
 No flaky tests currently — everything in `tests/` is pure parsing logic or fully mocked I/O, no
 timing dependencies, no real network/filesystem/process access.
@@ -176,4 +185,5 @@ N/A — no formal blueprint (see Section 2).
 ## 15. Review Cadence
 
 Revisit this doc's tracking table whenever `docs/sysmonitorgapanalysis.md`'s testing backlog is
-picked up again — i.e., whenever items 3, 4, or 5 get their own PR.
+picked up again — at this point that means only the uncovered half of item 4 (file/dependency
+scanning, live OS-parsing, baseline diff, CLI — see Section 4 above).
