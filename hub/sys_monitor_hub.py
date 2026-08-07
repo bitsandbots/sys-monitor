@@ -44,6 +44,7 @@ HUB_CONFIG = {
     "auth_token": os.getenv("SYSHUB_TOKEN", ""),
     "poll_interval": int(os.getenv("SYSHUB_POLL_INTERVAL", "5")),
     "request_timeout": int(os.getenv("SYSHUB_TIMEOUT", "4")),
+    "poll_max_workers": int(os.getenv("SYSHUB_POLL_MAX_WORKERS", "32")),
     "discovery_port": int(os.getenv("SYSHUB_DISCOVERY_PORT", "8585")),
     "alert_webhook_url": os.getenv("SYSHUB_ALERT_WEBHOOK_URL", ""),
 }
@@ -372,7 +373,9 @@ def _poller_loop():
         try:
             node_ids = list(_get_all_nodes().keys())
             if node_ids:
-                with ThreadPoolExecutor(max_workers=min(len(node_ids), 8)) as pool:
+                with ThreadPoolExecutor(
+                    max_workers=min(len(node_ids), HUB_CONFIG["poll_max_workers"])
+                ) as pool:
                     futures = {pool.submit(_poll_node, nid): nid for nid in node_ids}
                     for f in as_completed(futures, timeout=10):
                         try:
@@ -784,6 +787,7 @@ if __name__ == "__main__":
   Local IP:   {local_ip}
   Nodes:      {node_count} registered
   Polling:    every {HUB_CONFIG['poll_interval']}s
+  Max workers: {HUB_CONFIG['poll_max_workers']}
   Auth:       {'ENABLED' if HUB_CONFIG['auth_token'] else 'DISABLED'}
   Webhook:    {'ENABLED' if HUB_CONFIG['alert_webhook_url'] else 'DISABLED'}
 \033[36m╚══════════════════════════════════════════════════════════════╝\033[0m
