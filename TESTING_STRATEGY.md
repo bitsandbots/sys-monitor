@@ -18,22 +18,33 @@
 | 1 | `/proc` parsing (CPU/memory/uptime) | **Done** — `tests/test_proc_parsing.py` |
 | 2 | LLM-detection probing (mocked HTTP) | **Done** — `tests/test_llm_detection.py` |
 | 3 | hiddenscope integration glue | **Done** — `tests/test_hiddenscope_glue.py` |
-| 4 | `hiddenscope_scanner.py` internals | **Partially done** — allowlist matching + severity scoring only, see below |
+| 4 | `hiddenscope_scanner.py` internals | **Mostly done** — allowlist matching, severity scoring, and file/dependency scanning, see below |
 | 5 | Hub polling/proxy/aggregation logic | **Done** — `hub/tests/` |
 | 6 | Port-range regression guard (`_MAX_SCANNED_PORT`) | **Done** — `tests/test_llm_detection.py` |
 | 7 | CI running `py_compile`/tests on every change | **Done** — `.github/workflows/ci.yml` |
 | 8 | Pi vs. generic-PC `/proc` fixtures | **Done** — `tests/fixtures/proc/` |
 
-**Item 4 is intentionally partial.** The gap analysis's own scope for this item was "allowlist
+**Item 4 is intentionally not 100%.** The gap analysis's own scope for this item was "allowlist
 matching and severity scoring are untested" — `tests/test_hiddenscope_allowlist_and_severity.py`
 covers exactly that (`AllowList.suppresses_conn`/`from_file`, `is_private`, `_sev`/`_sev_down`,
-`score_connection`), all pure logic with zero I/O. **Not covered**, and a separate, larger piece of
-work if ever picked up: `hiddenscope_scanner.py`'s static file/dependency secret-scanning
-(`scan_file`/`scan_tree`/`scan_deps` — regex + entropy detection), live connection/listener
-OS-parsing (`get_connections_ss`/`get_connections_psutil`/etc.), baseline diff, and its CLI. None
-of this is exercised anywhere, and it's the largest remaining surface in the whole repo by line
-count (`hiddenscope_scanner.py` is 2353 lines; everything tested against it so far is ~150 of
-those).
+`score_connection`), all pure logic with zero I/O. On top of that (beyond the doc's original
+wording, since it's the highest-consequence piece to get right — it's what decides what counts as
+an embedded secret or reverse-shell pattern): the static file/dependency scanner itself —
+`tests/test_hiddenscope_fp_helpers.py` (the false-positive-reduction helpers: `_entropy`,
+`_is_placeholder_cred`, `_ip_is_documentation`, `_extract_url_domain`/`_domain_is_benign`,
+`_is_comment_line`/`_byte_is_comment_line`, `_in_test_path`) and
+`tests/test_hiddenscope_file_scanning.py` (`scan_file`/`scan_tree`/`scan_deps` — one representative
+case per detection-pattern family, the FP-downgrade paths, boundary/skip behavior, directory
+walking with skip-dirs/symlinks/custom `scan_dirs`, and dependency-manifest parsing).
+
+**Still not covered**, and a separate, smaller piece of work if ever picked up: live connection/
+listener OS-parsing (`get_connections_ss`/`get_connections_psutil`/`get_listeners_ss`/
+`get_listeners_psutil` — shells out to `ss`/uses `psutil` against the real host, a genuinely
+different subsystem from file scanning), `baseline_capture`/`baseline_diff` (drift detection
+between two scan runs, built on top of scanning rather than being scanning itself), and the CLI
+(`cmd_*`/`_build_parser`/`main()` — argparse plumbing and terminal output formatting, low test
+value). This remaining slice is much smaller than what was originally deferred — the two heaviest
+pieces (file/dependency scanning and its FP-reduction logic) are now covered.
 
 **Two things explicitly not covered by item 5's "Done"**, noted rather than silently folded in:
 - `POST /api/nodes`'s fire-and-forget immediate-poll background thread (`hub/sys_monitor_hub.py`,
