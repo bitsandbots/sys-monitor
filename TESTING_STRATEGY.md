@@ -19,14 +19,24 @@
 | 2 | LLM-detection probing (mocked HTTP) | **Done** — `tests/test_llm_detection.py` |
 | 3 | hiddenscope integration glue | Deferred — follow-up PR |
 | 4 | `hiddenscope_scanner.py` internals | Deferred — follow-up PR (lowest priority per the doc itself) |
-| 5 | Hub polling/proxy/aggregation logic | Deferred — follow-up PR |
+| 5 | Hub polling/proxy/aggregation logic | **Done** — `hub/tests/` |
 | 6 | Port-range regression guard (`_MAX_SCANNED_PORT`) | **Done** — `tests/test_llm_detection.py` |
 | 7 | CI running `py_compile`/tests on every change | **Done** — `.github/workflows/ci.yml` |
 | 8 | Pi vs. generic-PC `/proc` fixtures | **Done** — `tests/fixtures/proc/` |
 
-Items 3, 4, 5 cover the Hub (`hub/sys_monitor_hub.py`) and the vendored `hiddenscope_scanner.py` —
-deliberately out of scope for this pass to keep it one coherent, reviewable PR touching only the
-node agent. Same pattern as every other change already shipped to this repo.
+Items 3 and 4 cover the vendored `hiddenscope_scanner.py` and its integration glue in
+`sys_monitor.py` — deliberately out of scope to keep each pass one coherent, reviewable PR. Same
+pattern as every other change already shipped to this repo.
+
+**Two things explicitly not covered by item 5's "Done"**, noted rather than silently folded in:
+- `POST /api/nodes`'s fire-and-forget immediate-poll background thread (`hub/sys_monitor_hub.py`,
+  `api_add_node`) isn't tested at the HTTP layer — testing it there risks a race between test
+  teardown and the background thread's call into a possibly-already-unmocked `_fetch_node`. Its
+  core logic (`_add_node()`) is tested directly instead (`hub/tests/test_node_registry.py`),
+  covering the same registry mutation without the async risk.
+- `_discover_subnet()` (real socket-level subnet scanning) isn't covered — harder to mock
+  meaningfully than the rest of the Hub's surface, and not explicitly called out in item 5's own
+  scope in the gap analysis.
 
 ## 1. Definition of Done
 
@@ -56,8 +66,8 @@ shapes) serve this role informally.
 
 This project doesn't have long multi-step user workflows in the sense the template means (job
 submission → processing → notify, etc.). The closest analog is the Hub's poll → cache → serve
-cycle (`_poller_loop()` → `_poll_node()` → in-memory `_nodes` cache → `/api/fleet`), which is
-explicitly deferred (gap-analysis item 5) to the follow-up Hub test PR.
+cycle (`_poller_loop()` → `_poll_node()` → in-memory `_nodes` cache → `/api/fleet`) — now covered
+end-to-end in `hub/tests/test_poller.py` and `hub/tests/test_fleet_api.py` (gap-analysis item 5).
 
 ## 4. Regression Suite
 
@@ -73,7 +83,7 @@ explicitly deferred (gap-analysis item 5) to the follow-up Hub test PR.
 
 | Talks to | Mechanism | Contract defined at | Consumer tests | Provider tests | Status |
 |---|---|---|---|---|---|
-| Fleet Hub ↔ node agent | HTTP (`requests`, JSON) | `docs/api.md` | — | — | Deferred (item 5) |
+| Fleet Hub ↔ node agent | HTTP (`requests`, JSON) | `docs/api.md` | `hub/tests/test_poller.py`, `hub/tests/test_fleet_api.py` (mocked at `_fetch_node`, the Hub's single seam) | — (node agent's own routes tested independently in `tests/`) | **Covered** |
 | Node agent ↔ local LLM servers | HTTP (`urllib`), Ollama/OpenAI-compatible shapes | `sys_monitor.py::_probe_llm_port` | `tests/test_llm_detection.py` | — (external servers, not ours to test) | **Covered** |
 
 ## 6. Evals (AI-generated / AI-assisted components)
@@ -111,7 +121,7 @@ proxy, not a coordination system.
 
 ## 11. Test Harness
 
-- Single entrypoint: `python3 -m pytest tests/`
+- Single entrypoint: `python3 -m pytest tests/ hub/tests/`
 - Not containerized — matches this project's no-Docker, stdlib-first posture (`CLAUDE.md`).
 - Host prerequisites: Python 3.11+ (matches `README.md`'s stated floor), `pip install -r
   requirements-dev.txt`.
@@ -130,6 +140,14 @@ mock `_read_file`/`_run` directly; `test_llm_detection.py` mocks `urllib.request
 directly. `CONFIG["auth_token"]`/`CONFIG["config_token"]` are read fresh per request (not cached
 at decoration time). `detect_system()` only runs under `if __name__ == "__main__":` — importing
 `sys_monitor` for tests never touches the real system.
+
+The Hub (`hub/sys_monitor_hub.py`) has the same shape: every HTTP call it makes to a node goes
+through one function, `_fetch_node()` — every proxy route is a thin synchronous wrapper around it.
+`hub/tests/conftest.py` mocks it (default: every node "unreachable" unless a test overrides it)
+and isolates `_NODES_FILE` to a `tmp_path`, so the Hub suite never touches a real `hub_nodes.json`
+or makes a real network call either. The one genuine background thread in the Hub
+(`_poller_loop()`) is tested by actually running it briefly in the test process — see
+`hub/tests/test_poller.py`'s module docstring for why that's the only honest way to exercise it.
 
 ## 12. CI Wiring
 

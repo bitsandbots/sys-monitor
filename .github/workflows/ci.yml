@@ -17,10 +17,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
+        run: pip install -r requirements.txt -r hub/requirements.txt -r requirements-dev.txt
 
       - name: Compile check
         run: python3 -m py_compile sys_monitor.py hub/sys_monitor_hub.py hiddenscope_scanner.py
 
       - name: Run tests
-        run: python3 -m pytest tests/ -v
+        run: python3 -m pytest tests/ hub/tests/ -v
