@@ -235,7 +235,9 @@ install_node() {
   cp sys-monitor.service /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable "$NODE_SERVICE"
-  systemctl start  "$NODE_SERVICE"
+  # restart, not start — an already-active unit ignores `start` (no-op), which
+  # would leave the old code running after files are overwritten on upgrade
+  systemctl restart "$NODE_SERVICE"
 
   # Wait for service to come up
   local retries=10
@@ -272,7 +274,8 @@ install_hub() {
   cp hub/sys-monitor-hub.service /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable "$HUB_SERVICE"
-  systemctl start  "$HUB_SERVICE"
+  # restart, not start — see note in install_node()
+  systemctl restart "$HUB_SERVICE"
 
   local retries=10
   while [[ $retries -gt 0 ]]; do
