@@ -115,6 +115,7 @@ RELEASE_FILES=(
   release.sh
   .env.example
   README.md
+  MIGRATION.md
   docs
   hub/sys_monitor_hub.py
   hub/requirements.txt
