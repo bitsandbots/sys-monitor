@@ -685,6 +685,8 @@ body {
 // ════════════════════════════════════════════════════════════════════════
 const REFRESH = {{ config.refresh_interval * 1000 }};
 const MAX_H = 60;
+const AUTH_TOKEN = {{ config.auth_token|tojson }};
+const AUTH_HEADERS = AUTH_TOKEN ? { 'Authorization': 'Bearer ' + AUTH_TOKEN } : {};
 
 // ── State ──
 let cpuH = [], tempH = [], rxH = [], txH = [];
@@ -835,7 +837,7 @@ function barHTML(label, value, max, detail, color) {
 // ════════════════════════════════════════════════════════════════════════
 async function api(path) {
   try {
-    const r = await fetch('/api/' + path);
+    const r = await fetch('/api/' + path, { headers: AUTH_HEADERS });
     if (!r.ok) throw new Error(r.statusText);
     missedPolls = 0;
     setConnected(true);
@@ -848,13 +850,13 @@ async function api(path) {
 }
 async function apiPost(path) {
   try {
-    const r = await fetch('/api/' + path, { method: 'POST' });
+    const r = await fetch('/api/' + path, { method: 'POST', headers: AUTH_HEADERS });
     return await r.json();
   } catch (e) { return null; }
 }
 async function apiDelete(path) {
   try {
-    const r = await fetch('/api/' + path, { method: 'DELETE' });
+    const r = await fetch('/api/' + path, { method: 'DELETE', headers: AUTH_HEADERS });
     return await r.json();
   } catch (e) { return null; }
 }
@@ -1375,7 +1377,7 @@ async function svcAction(name, action) {
 async function apiJson(path, method, body) {
   try {
     const r = await fetch('/api/' + path, {
-      method, headers: { 'Content-Type': 'application/json' },
+      method, headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     return await r.json();
@@ -1437,7 +1439,7 @@ async function execRemoveService() {
   if (!name) return;
   hideModal();
   _pendingRemoveSvc = null;
-  const r = await fetch('/api/services/config/' + encodeURIComponent(name), { method: 'DELETE' });
+  const r = await fetch('/api/services/config/' + encodeURIComponent(name), { method: 'DELETE', headers: AUTH_HEADERS });
   const data = await r.json().catch(() => null);
   if (data && data.success) {
     toast(`Removed ${name}`, 'warning');
