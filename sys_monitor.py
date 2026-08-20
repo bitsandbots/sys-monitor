@@ -20,13 +20,12 @@ import ipaddress
 import json
 import os
 import re
-import signal
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 from pathlib import Path
 
@@ -612,7 +611,7 @@ _net_prev_time = 0.0
 
 def get_network() -> dict:
     """Network interfaces with throughput rates (bytes/sec)."""
-    global _net_prev, _net_prev_time
+    global _net_prev_time
     now = time.time()
 
     interfaces = []
@@ -933,17 +932,9 @@ def get_open_ports() -> list:
             )
         except ValueError:
             continue
-    # Sort by port number and remove duplicates
+    # Sort by port number, then dedupe by (port, protocol)
     ports.sort(key=lambda x: (x["port"], x["protocol"]))
-    # Deduplicate by (port, protocol)
-    seen = set()
-    unique_ports = []
-    for p in ports:
-        key = (p["port"], p["protocol"])
-        if key not in seen:
-            seen.add(key)
-            unique_ports.append(p)
-    return unique_ports
+    return list({(p["port"], p["protocol"]): p for p in ports}.values())
 
 
 def get_services_with_ports() -> list:
@@ -951,19 +942,6 @@ def get_services_with_ports() -> list:
     # Get configured services and their status
     services = get_services()
     ports = get_open_ports()
-
-    # Build a map of service name -> expected port
-    service_port_map = {}
-    for svc in services:
-        name = svc["name"].lower()
-        # Check if we know the default port for this service
-        for key, port in _SERVICE_PORTS.items():
-            if key in name or name in key:
-                service_port_map[port] = svc["name"]
-                break
-
-    # Build map of monitored services by name
-    monitored = {s["name"]: s for s in services}
 
     # Find which ports are associated with monitored services
     ports_with_services = []
