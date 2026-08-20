@@ -71,7 +71,6 @@ def _generate_id(host, port):
 
 def _load_nodes():
     """Load saved node registry from disk."""
-    global _nodes
     if _NODES_FILE.exists():
         try:
             data = json.loads(_NODES_FILE.read_text())
