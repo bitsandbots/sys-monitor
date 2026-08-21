@@ -1488,12 +1488,17 @@ def baseline_diff(saved_path: Path, al: Optional[AllowList] = None) -> List[Find
     for addr in cur_r - saved_r:
         ip, port = _parse_addr(addr)
         if ip and not is_private(ip):
+            procs = [c for c in cur_conns if c.get("raddr") == addr]
             # Check allowlist
-            dummy_conn: ConnDict = {"rip": ip, "rport": port, "proc": "", "pid": None}
+            dummy_conn: ConnDict = {
+                "rip": ip,
+                "rport": port,
+                "proc": procs[0]["proc"] if procs else "",
+                "pid": None,
+            }
             if al.suppresses_conn(dummy_conn):
                 continue
             sev = "high" if port and port in SUSPICIOUS_PORTS else "medium"
-            procs = [c for c in cur_conns if c.get("raddr") == addr]
             pstr = ", ".join(f"PID {c['pid']} [{c['proc']}]" for c in procs) or "?"
             findings.append(
                 Finding(
@@ -2093,9 +2098,12 @@ def cmd_report(args: argparse.Namespace, al: AllowList) -> int:
         },
     }
 
+    threshold = _sev(args.severity)
+    code = 1 if any(_sev(f.severity) >= threshold for f in findings) else 0
+
     if args.json:
         print(json.dumps(report, indent=2))
-        return 0
+        return code
 
     s = report["summary"]
     print(
@@ -2136,8 +2144,7 @@ def cmd_report(args: argparse.Namespace, al: AllowList) -> int:
         _hdr(f"Live findings ({len(findings)})")
         print_findings(findings, min_sev=args.severity)
 
-    threshold = _sev(args.severity)
-    return 1 if any(_sev(f.severity) >= threshold for f in findings) else 0
+    return code
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
