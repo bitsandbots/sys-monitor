@@ -462,6 +462,7 @@ body {
     <button class="tab-btn" data-tab="processes"><span class="tab-icon">▤</span> Processes</button>
     <button class="tab-btn" data-tab="network"><span class="tab-icon">⇅</span> Network</button>
     <button class="tab-btn" data-tab="storage"><span class="tab-icon">▧</span> Storage</button>
+    <button class="tab-btn" data-tab="models"><span class="tab-icon">◈</span> Models</button>
     <button class="tab-btn" data-tab="system"><span class="tab-icon">⏻</span> System</button>
     <button class="tab-btn" data-tab="security"><span class="tab-icon">🛡</span> Security</button>
     <button class="tab-btn" data-tab="logs"><span class="tab-icon">☰</span> Logs</button>
@@ -579,6 +580,18 @@ body {
     <!-- ══ STORAGE ══ -->
     <div class="panel" id="panel-storage">
       <div id="storage-list"></div>
+    </div>
+
+    <!-- ══ MODELS ══ -->
+    <div class="panel" id="panel-models">
+      <div class="card" style="--accent-color:var(--purple)">
+        <div class="card-hdr">Agent Wiring <span style="color:var(--text-muted);font-weight:400;font-size:10px">which CLI points at which model</span></div>
+        <div id="wiring-list"></div>
+      </div>
+      <div class="card" style="--accent-color:var(--blue)">
+        <div class="card-hdr">LLM Backends</div>
+        <div id="llm-list"></div>
+      </div>
     </div>
 
     <!-- ══ SYSTEM ══ -->
@@ -1068,6 +1081,35 @@ async function refreshTab() {
           <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);margin-top:2px">Free: ${fGB} GB · ${100-d.percent}%</div>
         </div>`;
       }).join('');
+    }
+  }
+
+  if (activeTab === 'models') {
+    const wiring = await api('agent-wiring');
+    if (wiring) {
+      $('wiring-list').innerHTML = !wiring.available
+        ? '<div style="color:var(--text-muted);font-size:11px">cc-configure-agent not found on this host — not a Tier P node</div>'
+        : !wiring.agents.length
+        ? '<div style="color:var(--text-muted);font-size:11px">no agentic CLIs configured</div>'
+        : wiring.agents.map(a => `<div class="card svc-item" style="--accent-color:${a.resolves?'var(--green)':'var(--border)'}">
+            <span class="svc-dot ${a.resolves?'on':'off'}"></span>
+            <div class="svc-info">
+              <div class="svc-name">${esc(a.agent)} <span style="color:var(--cyan);font-weight:400">${esc(a.configured)}</span></div>
+              <div class="svc-desc">${esc(a.note || (a.resolves ? 'resolving' : 'not resolving'))}</div>
+            </div>
+          </div>`).join('');
+    }
+    const llm = await api('llm');
+    if (llm) {
+      $('llm-list').innerHTML = !llm.length
+        ? '<div style="color:var(--text-muted);font-size:11px">no LLM ports detected</div>'
+        : llm.map(s => `<div class="card svc-item" style="--accent-color:${s.serving?'var(--green)':'var(--border)'}">
+            <span class="svc-dot ${s.serving?'on':'off'}"></span>
+            <div class="svc-info">
+              <div class="svc-name">${esc(s.label)} <span style="color:var(--text-muted);font-weight:400">:${s.port}</span></div>
+              <div class="svc-desc">${s.serving ? esc((s.models||[]).join(', ')) : 'not serving'}</div>
+            </div>
+          </div>`).join('');
     }
   }
 
