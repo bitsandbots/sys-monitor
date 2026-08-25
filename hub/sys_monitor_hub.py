@@ -422,6 +422,10 @@ def _discover_subnet(subnet=None, port=None, timeout=1.5):
         network = IPv4Network(subnet, strict=False)
     except ValueError:
         return []
+    if network.prefixlen < 24:
+        # ponytail: hard /24 cap keeps discovery bounded; raise if larger
+        # fleets need scanning, but that's speculative today.
+        return []
 
     hosts = [str(ip) for ip in network.hosts()]
     found = []

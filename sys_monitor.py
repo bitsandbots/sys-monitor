@@ -783,21 +783,26 @@ def control_service(name: str, action: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 # Power Controls
 # ═══════════════════════════════════════════════════════════════════════════
+_POWER_COMMANDS = {
+    "reboot": ["sudo", "reboot"],
+    "shutdown": ["sudo", "shutdown", "-h", "now"],
+}
+
+
 def system_power(action: str) -> dict:
     """Reboot or shutdown."""
-    if action == "reboot":
-        subprocess.Popen(
-            ["sudo", "reboot"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        return {"success": True, "action": "reboot"}
-    elif action == "shutdown":
-        subprocess.Popen(
-            ["sudo", "shutdown", "-h", "now"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return {"success": True, "action": "shutdown"}
-    return {"success": False, "error": "Invalid power action"}
+    cmd = _POWER_COMMANDS.get(action)
+    if not cmd:
+        return {"success": False, "error": "Invalid power action"}
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return {
+            "success": result.returncode == 0,
+            "action": action,
+            "stderr": result.stderr.strip(),
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": f"Timeout: {action}"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
