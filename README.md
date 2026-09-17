@@ -1,4 +1,4 @@
-# Sys**|Monitor** v2.4.0
+# Sys**|Monitor** v2.4.5
 
 A lightweight, self-hosted Linux system monitor and service control console written in Python. Single-file Flask backend, zero JavaScript dependencies, no build step.
 
@@ -104,6 +104,39 @@ journalctl -u sys-monitor -f
 ```bash
 sudo ./install.sh --uninstall
 ```
+
+## v2.4.5 — Release Notes
+
+**New: test coverage.** Added dedicated suites for the node agent, Fleet Hub
+polling/proxy/aggregation, and hiddenscope's glue/allowlist/severity/file-scan
+paths. **Fix:** `install.sh`/`update.sh` now restart the service on
+install/upgrade instead of `start` (a `start` on an already-running service
+is a no-op, so upgrades silently kept serving the old code until a manual
+restart).
+
+### v2.4.4 (previous)
+
+**Perf:** Fleet Hub's node poller concurrency now scales with fleet size
+(`ThreadPoolExecutor(max_workers=min(node_count, 8))`) instead of a fixed
+worker count, so polling a larger fleet doesn't serialize behind a small pool.
+
+### v2.4.3 (previous)
+
+**Fix:** extending the service control allowlist now requires a separate
+token from general API auth, rather than reusing the same bearer token for
+both read/control access and allowlist changes.
+
+### v2.4.2 (previous)
+
+**New:** outbound webhook alerts on Fleet Hub state transitions (a node going
+up/down/degraded can now notify an external endpoint, not just update the
+dashboard). **Fixes:** `update.sh`'s extract-dir glob no longer matches
+`WORK_DIR` itself; release checksums are now written with a bare filename
+instead of the full `dist/` path.
+
+### v2.4.1
+
+Version bump only — no functional changes from v2.3.0.
 
 ## v2.4.0 — Release Notes
 
