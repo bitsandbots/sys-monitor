@@ -10,7 +10,10 @@ dependency). SysMonitor calls `_connections()`, `_listeners()`,
 `sys_monitor.py`'s "Security Monitoring" section to power the dashboard's
 Security tab and alert card. This file also remains fully usable standalone
 as the original `hiddenscope` CLI (`python3 hiddenscope_scanner.py live`,
-`scan`, `watch`, `report`, etc.) — nothing below this note has been changed.
+`scan`, `watch`, `report`, etc.) — nothing below this note has been changed
+except SysMonitor additions marked "SysMonitor addition" (obfuscated
+network-target patterns in SOURCE_PATTERNS, deleted-binary check in
+score_connection).
 
 Subcommands:
   live       Active TCP/UDP connections with process mapping
@@ -767,6 +770,36 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
         ),
         "Raw socket connect/bind",
         "low",
+    ),
+    # ── Obfuscated network targets (hide *where* a call goes) ────────────────
+    # SysMonitor addition: not in upstream hiddenscope.
+    (
+        re.compile(r"inet_ntoa\s*\(\s*(?:struct\s*\.\s*pack\s*\(|\d{7,10}\b|0x[0-9a-fA-F]{6,8}\b)"),
+        "IP address built from packed/integer value",
+        "high",
+    ),
+    (
+        re.compile(r"ip_address\s*\(\s*(?:\d{8,10}|0x[0-9a-fA-F]{8})\s*\)"),
+        "IP address from integer literal",
+        "high",
+    ),
+    (
+        re.compile(r"""["']\.["']\s*\.\s*join\s*\(\s*\[?\s*str\s*\("""),
+        "IP address assembled from joined octets",
+        "medium",
+    ),
+    (
+        re.compile(r"bytes\s*\(\s*\[\s*\d+(?:\s*,\s*\d+){5,}\s*,?\s*\]\s*\)\s*\.\s*decode"),
+        "String decoded from literal byte list",
+        "medium",
+    ),
+    (
+        re.compile(
+            r"(?:connect|create_connection|urlopen|get|post|request)\s*\([^)\n]*"
+            r"(?:b64decode|base64_decode|atob)\s*\("
+        ),
+        "Network call target decoded from base64",
+        "high",
     ),
 ]
 
