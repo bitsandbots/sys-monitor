@@ -252,6 +252,15 @@ Full hiddenscope security status — findings, actionable count, flagged listene
 
 `actionable_count` counts findings with severity `>=` `HIDDENSCOPE_MIN_SEVERITY` (default `high`) — this drives the Security Alert card. `known_local_service: true` on a flagged listener means the port also matches a locally-known service (e.g. LM Studio on 1234); it's annotated, not suppressed.
 
+`GET /api/security` also returns (v2.5.0+) `actionable_findings` (up to 10 findings at/above the threshold), `internal_connections` (established connections to non-loopback private addresses, used by the Hub for fleet-aware scoring) and `declared_ports` (agent port, allowlisted ports and ports of configured services). Finding categories include `live.suspicious_port`, `live.suspicious_exe`, `live.deleted_exe` (process whose binary was deleted from disk), `live.external`, `live.first_seen` (first time a process reaches an external IP since the agent started; `medium`), and `baseline.*` diffs. Watcher alerts are retained for `HIDDENSCOPE_WATCH_RETENTION` seconds, so a connection that closed between polls still appears.
+
+### Security Baseline (v2.5.0+)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/security/baseline` | `{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}` |
+| `POST` | `/api/security/baseline` | Requires the bearer token when one is set. Snapshots current connections/listeners to `HIDDENSCOPE_BASELINE_FILE`; afterwards `/api/security` adds `baseline.new_listener` / `baseline.new_external` findings for anything not in the snapshot. Returns `{"success": true, "captured_at": "..."}` |
+
 ### Security Allowlist
 
 | Method | Endpoint | Description |
@@ -420,6 +429,8 @@ Cached snapshot of all registered nodes.
 Not a route — outbound only. Set `SYSHUB_ALERT_WEBHOOK_URL` to have the Hub `POST` a JSON payload once per state transition it detects during polling (online↔offline, temperature/power/security alert↔recovered). Unset by default (disabled).
 
 Events: `node_offline`/`node_online`, `temperature_alert`/`temperature_recovered`, `power_alert`/`power_recovered`, `security_alert`/`security_recovered`.
+
+From v2.5.0 a `security_alert` carries `detail: {"actionable_count": N, "findings": [{"category", "severity", "description", "detail"}]}`. It fires on the first actionable finding and again whenever a finding not yet reported appears while the node is already alerting (`findings` then lists only the new ones). The Hub also adds `fleet.undeclared_port` findings: a node connecting to another registered node on a port that node hasn't declared.
 
 ```json
 {"event": "node_offline", "node_id": "192-168-1-42-8585", "node_label": "Node-A", "host": "192.168.1.42:8585", "timestamp": "2026-08-05T21:30:00", "message": "Node Node-A is now offline", "detail": {}}
