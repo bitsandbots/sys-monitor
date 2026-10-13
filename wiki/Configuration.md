@@ -20,6 +20,11 @@ Set them in the systemd unit file (`/etc/systemd/system/sys-monitor.service`) or
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity counted as "actionable" (drives the Security Alert card). One of `info`, `low`, `medium`, `high`, `critical`. |
 | `HIDDENSCOPE_SCAN_PATH` | *(empty)* | Server-side-only directory for the on-demand static scan (`POST /api/security/scan`). Leave unset to disable it. |
 | `HIDDENSCOPE_ALLOWLIST_FILE` | `./hiddenscope_allowlist.json` | Path to persist the security allowlist (ports/procs/networks). |
+| `HIDDENSCOPE_BASELINE_FILE` | `./hiddenscope_baseline.json` | Known-good snapshot written by `POST /api/security/baseline`; once present, anything new since is reported. |
+| `HIDDENSCOPE_WATCH_INTERVAL` | `5` | Seconds between background connection samples (catches short-lived beacons between dashboard polls). `0` disables the watcher. |
+| `HIDDENSCOPE_WATCH_COOLDOWN` | `300` | Seconds before the watcher re-alerts on the same process → address. |
+| `HIDDENSCOPE_WATCH_RETENTION` | `900` | Seconds a watcher alert keeps counting toward the alert card / Hub alert. |
+| `HIDDENSCOPE_WATCH_LOG` | *(empty)* | Optional file; each watcher alert is appended as one NDJSON line. |
 
 ### Authentication
 
