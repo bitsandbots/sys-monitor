@@ -161,6 +161,11 @@ All configuration is via environment variables — no config files to manage.
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity that counts as "actionable" (drives the Security Alert card) — one of `info`, `low`, `medium`, `high`, `critical` |
 | `HIDDENSCOPE_SCAN_PATH` | *(empty)* | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |
 | `HIDDENSCOPE_ALLOWLIST_FILE` | `./hiddenscope_allowlist.json` | Path to persist the security allowlist (ports/procs/networks) |
+| `HIDDENSCOPE_BASELINE_FILE` | `./hiddenscope_baseline.json` | Known-good connection/listener snapshot written by `POST /api/security/baseline`; once present, anything new since is reported |
+| `HIDDENSCOPE_WATCH_INTERVAL` | `5` | Seconds between background connection samples (catches short-lived beacons between dashboard polls); `0` disables the watcher |
+| `HIDDENSCOPE_WATCH_COOLDOWN` | `300` | Seconds before the watcher re-alerts on the same process → address |
+| `HIDDENSCOPE_WATCH_RETENTION` | `900` | Seconds a watcher alert keeps counting toward the alert card / Hub alert |
+| `HIDDENSCOPE_WATCH_LOG` | *(empty)* | Optional file; each watcher alert is appended as one NDJSON line |
 
 ### Configuring Services
 
@@ -211,6 +216,7 @@ The web UI currently does not send auth headers — token auth is designed for A
 | `/api/llm` | GET | Detected LLM-serving ports and, for each, whether it's serving a model and which one(s) |
 | `/api/security` | GET | hiddenscope security status — findings, actionable count, flagged listeners, summary |
 | `/api/security/allowlist` | GET/POST/DELETE | View / add / remove an allowlisted port, process, or network |
+| `/api/security/baseline` | GET / POST | Report / capture the known-good baseline (POST needs the bearer token when one is set) |
 | `/api/security/scan` | POST | Run the static secret/reverse-shell scan against `HIDDENSCOPE_SCAN_PATH` (server-configured, not client-supplied) |
 | `/api/system-health` | GET | Critical service status + stability checks |
 | `/api/system-errors` | GET | Recent journalctl error entries |

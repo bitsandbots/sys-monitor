@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -1237,6 +1238,122 @@ def _save_hs_allowlist(al) -> None:
         log_event(f"Failed to save security allowlist: {e}", "error")
 
 
+# Known-good connection/listener snapshot (captured via POST
+# /api/security/baseline); diffed on every status call once it exists.
+_HS_BASELINE_FILE = Path(
+    os.getenv(
+        "HIDDENSCOPE_BASELINE_FILE",
+        str(Path(__file__).parent / "hiddenscope_baseline.json"),
+    )
+)
+
+# Background watcher: samples connections every N seconds so short-lived
+# beacons that open and close between dashboard polls are still recorded.
+# 0 disables it. HIDDENSCOPE_WATCH_LOG (optional) appends each alert as an
+# NDJSON line.
+HIDDENSCOPE_WATCH_INTERVAL = float(os.getenv("HIDDENSCOPE_WATCH_INTERVAL", "5"))
+HIDDENSCOPE_WATCH_COOLDOWN = float(os.getenv("HIDDENSCOPE_WATCH_COOLDOWN", "300"))
+HIDDENSCOPE_WATCH_LOG = os.getenv("HIDDENSCOPE_WATCH_LOG", "").strip()
+# How long a watcher alert keeps counting toward the dashboard/Hub alert
+# state before it ages out (the NDJSON log keeps it permanently).
+HIDDENSCOPE_WATCH_RETENTION = float(os.getenv("HIDDENSCOPE_WATCH_RETENTION", "900"))
+
+_watch_alerts: deque = deque(maxlen=100)
+_watch_lock = threading.Lock()
+
+
+def _record_watch_alert(finding_dict: dict) -> None:
+    """Keep an alert in the in-memory ring and, if configured, the NDJSON log."""
+    with _watch_lock:
+        _watch_alerts.append((time.time(), finding_dict))
+    log_event(
+        f"Security watch: {finding_dict['description']} ({finding_dict['detail']})",
+        "warning",
+    )
+    if HIDDENSCOPE_WATCH_LOG:
+        try:
+            with open(HIDDENSCOPE_WATCH_LOG, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(finding_dict) + "\n")
+        except OSError as e:
+            log_event(f"Failed to write security watch log: {e}", "error")
+
+
+_WATCH_SEEN_MAX = 5000
+
+
+def _watch_tick(tracker, seen_dests: set, warmup: bool = False) -> int:
+    """One watcher sample: score connections, record new at/above-threshold
+    findings (deduped by the tracker's cooldown), and record the first time
+    each process reaches each external IP. warmup=True fills seen_dests
+    without alerting, so a restart doesn't flag every existing connection.
+    Returns alerts recorded."""
+    al = _load_hs_allowlist()
+    threshold = _hs._sev(HIDDENSCOPE_MIN_SEVERITY)
+    active, recorded = set(), 0
+    for c in _hs._connections():
+        f = _hs.score_connection(c, al)
+        if not f:
+            continue
+        dest = (c.get("proc"), c.get("rip"))
+        if dest not in seen_dests:
+            # ponytail: in-memory only, cleared at the cap; persist if restarts matter
+            if len(seen_dests) >= _WATCH_SEEN_MAX:
+                seen_dests.clear()
+            seen_dests.add(dest)
+            if not warmup:
+                first = _hs.Finding(
+                    "live.first_seen",
+                    "medium",
+                    "First connection from this process to this external IP",
+                    detail=f"PID {c.get('pid')} [{c.get('proc')}] → "
+                    f"{c.get('rip')}:{c.get('rport')}",
+                    source=c.get("exe") or c.get("proc") or "",
+                )
+                _record_watch_alert(first.to_dict())
+                recorded += 1
+        if _hs._sev(f.severity) < threshold:
+            continue
+        key = f"{c.get('proc')}|{c.get('raddr')}"
+        active.add(key)
+        if tracker.should_alert(key):
+            _record_watch_alert(f.to_dict())
+            recorded += 1
+    tracker.purge(active)
+    return recorded
+
+
+def _security_watcher_loop() -> None:
+    """Daemon loop around _watch_tick(); one bad sample never kills it."""
+    tracker = _hs.AlertTracker(cooldown=HIDDENSCOPE_WATCH_COOLDOWN)
+    seen_dests: set = set()
+    warmup = True
+    while True:
+        try:
+            _watch_tick(tracker, seen_dests, warmup)
+            warmup = False
+        except Exception as e:  # defensive: no supervisor restarts this thread
+            log_event(f"Security watcher error: {e}", "error")
+        time.sleep(HIDDENSCOPE_WATCH_INTERVAL)
+
+
+def start_security_watcher() -> bool:
+    """Start the watcher thread if hiddenscope is present and interval > 0."""
+    if not HIDDENSCOPE_AVAILABLE or HIDDENSCOPE_WATCH_INTERVAL <= 0:
+        return False
+    threading.Thread(
+        target=_security_watcher_loop, daemon=True, name="security-watcher"
+    ).start()
+    return True
+
+
+def get_baseline_findings(al) -> list:
+    """Diff current connections/listeners against the saved baseline.
+    Returns [] when no baseline has been captured."""
+    if not _HS_BASELINE_FILE.exists():
+        return []
+    return [f.to_dict() for f in _hs.baseline_diff(_HS_BASELINE_FILE, al)]
+
+
 def get_security_status() -> dict:
     """
     Live security monitoring via the vendored hiddenscope scanner: scores
@@ -1265,7 +1382,17 @@ def get_security_status() -> dict:
     conns = _hs._connections()
     listeners = _hs._listeners()
 
-    findings = [f for f in (_hs.score_connection(c, al) for c in conns) if f]
+    findings = [
+        f.to_dict() for f in (_hs.score_connection(c, al) for c in conns) if f
+    ]
+    # Watcher alerts catch connections that closed between dashboard polls;
+    # skip ones the live snapshot above already reports.
+    seen = {(f["category"], f["detail"]) for f in findings}
+    cutoff = time.time() - HIDDENSCOPE_WATCH_RETENTION
+    with _watch_lock:
+        recent = [a for t, a in _watch_alerts if t >= cutoff]
+    findings += [a for a in recent if (a["category"], a["detail"]) not in seen]
+    findings += get_baseline_findings(al)
 
     # Cross-reference listening ports against known-bad port numbers.
     # A hit here is informational, not proof of compromise — e.g. LM Studio
@@ -1289,13 +1416,26 @@ def get_security_status() -> dict:
             )
 
     threshold = _hs._sev(HIDDENSCOPE_MIN_SEVERITY)
-    actionable = [f for f in findings if _hs._sev(f.severity) >= threshold]
+    actionable = [f for f in findings if _hs._sev(f["severity"]) >= threshold]
 
     return {
         "available": True,
-        "findings": [f.to_dict() for f in findings],
+        "findings": findings,
         "actionable_count": len(actionable),
+        "actionable_findings": actionable[:10],
         "flagged_listeners": flagged_listeners,
+        "internal_connections": [
+            {"rip": c["rip"], "rport": c["rport"], "proc": c.get("proc")}
+            for c in conns
+            if c.get("status") == "ESTABLISHED"
+            and c.get("rip")
+            and _hs.is_private(c["rip"])
+            and not c["rip"].startswith(("127.", "::1"))
+        ],
+        "declared_ports": sorted(
+            {CONFIG["port"], *al.ports}
+            | {_SERVICE_PORTS[s.lower()] for s in CONFIG["services"] if s.lower() in _SERVICE_PORTS}
+        ),
         "summary": {
             "total_connections": len(conns),
             "external_connections": sum(
@@ -1303,7 +1443,7 @@ def get_security_status() -> dict:
             ),
             "total_listeners": len(listeners),
             "findings_by_severity": {
-                s: sum(1 for f in findings if f.severity == s) for s in _hs.SEV_LEVELS
+                s: sum(1 for f in findings if f["severity"] == s) for s in _hs.SEV_LEVELS
             },
         },
     }
@@ -1719,6 +1859,40 @@ def api_security_allowlist_remove():
     return jsonify({"success": True, "removed": removed})
 
 
+@app.route("/api/security/baseline", methods=["GET"])
+def api_security_baseline_get():
+    """Report whether a baseline exists, and when/where it was captured."""
+    if not HIDDENSCOPE_AVAILABLE:
+        return jsonify({"success": False, "error": "hiddenscope not available"}), 400
+    if not _HS_BASELINE_FILE.exists():
+        return jsonify({"captured": False})
+    try:
+        snap = json.loads(_HS_BASELINE_FILE.read_text())
+    except (OSError, ValueError) as e:
+        return jsonify({"captured": False, "error": f"unreadable baseline: {e}"}), 500
+    return jsonify({"captured": True, "captured_at": snap.get("captured")})
+
+
+@app.route("/api/security/baseline", methods=["POST"])
+@require_auth
+def api_security_baseline_capture():
+    """Snapshot current connections/listeners as the known-good baseline.
+    Later /api/security calls report anything new since this moment."""
+    if not HIDDENSCOPE_AVAILABLE:
+        return jsonify({"success": False, "error": "hiddenscope not available"}), 400
+    try:
+        snap = _hs.baseline_capture(_HS_BASELINE_FILE)
+    except OSError as e:
+        log_event(f"Security baseline capture failed: {e}", "error")
+        return jsonify({"success": False, "error": str(e)}), 500
+    log_event(
+        f"Security baseline captured: {len(snap['connections'])} connection(s), "
+        f"{len(snap['listeners'])} listener(s)",
+        "info",
+    )
+    return jsonify({"success": True, "captured_at": snap["captured"]})
+
+
 @app.route("/api/security/scan", methods=["POST"])
 @require_auth
 def api_security_scan():
@@ -1802,6 +1976,8 @@ if __name__ == "__main__":
         f"Security monitoring (hiddenscope): "
         f"{'ENABLED — min severity ' + HIDDENSCOPE_MIN_SEVERITY if HIDDENSCOPE_AVAILABLE else 'UNAVAILABLE (hiddenscope_scanner.py not found)'}"
     )
+    if start_security_watcher():
+        log_event(f"Security watcher: every {HIDDENSCOPE_WATCH_INTERVAL:g}s")
     log_event(f"Listening on http://{CONFIG['host']}:{CONFIG['port']}")
     log_event("SysMonitor ready.", "success")
 
