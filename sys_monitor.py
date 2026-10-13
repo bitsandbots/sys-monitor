@@ -1422,6 +1422,7 @@ def get_security_status() -> dict:
         "available": True,
         "findings": findings,
         "actionable_count": len(actionable),
+        "actionable_findings": actionable[:10],
         "flagged_listeners": flagged_listeners,
         "internal_connections": [
             {"rip": c["rip"], "rport": c["rport"], "proc": c.get("proc")}

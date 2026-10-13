@@ -251,6 +251,7 @@ def _check_alerts(nid, online, status=None, security=None):
                 "power_alert": False,
             },
         )
+        prev_security_keys = alert_state.setdefault("security_keys", set())
         prev_online = alert_state["online"]
         prev_temp_level = alert_state["temp_level"]
         prev_power_alert = alert_state["power_alert"]
@@ -297,19 +298,33 @@ def _check_alerts(nid, online, status=None, security=None):
     if security is not None:
         actionable = security.get("actionable_count", 0)
         security_bad = actionable > 0
-        if security_bad != prev_security_alert:
-            if security_bad:
-                _send_webhook(
-                    "security_alert",
-                    snapshot,
-                    f"{actionable} actionable security finding(s) on {label}",
-                    {"actionable_count": actionable},
-                )
-            else:
-                _send_webhook("security_recovered", snapshot, f"Security findings on {label} cleared")
-            with _nodes_lock:
-                if nid in _nodes:
-                    _nodes[nid]["_alert_state"]["security_alert"] = security_bad
+        findings = security.get("actionable_findings") or []
+        keys = {f"{f.get('category')}|{f.get('detail')}" for f in findings}
+        new_keys = keys - prev_security_keys
+        if security_bad and (not prev_security_alert or new_keys):
+            # Fires on the first alert and again whenever a finding we haven't
+            # reported yet appears while the node is already alerting.
+            reported = [
+                f for f in findings if f"{f.get('category')}|{f.get('detail')}" in new_keys
+            ] or findings
+            _send_webhook(
+                "security_alert",
+                snapshot,
+                f"{actionable} actionable security finding(s) on {label}",
+                {
+                    "actionable_count": actionable,
+                    "findings": [
+                        {k: f.get(k) for k in ("category", "severity", "description", "detail")}
+                        for f in reported
+                    ],
+                },
+            )
+        elif not security_bad and prev_security_alert:
+            _send_webhook("security_recovered", snapshot, f"Security findings on {label} cleared")
+        with _nodes_lock:
+            if nid in _nodes:
+                _nodes[nid]["_alert_state"]["security_alert"] = security_bad
+                _nodes[nid]["_alert_state"]["security_keys"] = keys
 
 
 _IP_CACHE_TTL = 300
@@ -408,7 +423,11 @@ def _poll_node(nid):
         with _nodes_lock:
             if nid in _nodes:
                 _nodes[nid]["security_lateral"] = lateral
-        security = {**security, "actionable_count": security.get("actionable_count", 0) + len(lateral)}
+        security = {
+            **security,
+            "actionable_count": security.get("actionable_count", 0) + len(lateral),
+            "actionable_findings": (security.get("actionable_findings") or []) + lateral,
+        }
 
     _check_alerts(nid, online=True, status=status, security=security)
 
