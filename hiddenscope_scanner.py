@@ -1061,12 +1061,24 @@ def score_connection(c: ConnDict, al: Optional[AllowList] = None) -> Optional[Fi
     rip, rport = c.get("rip"), c.get("rport")
     proc, exe, pid = c.get("proc", "?"), c.get("exe", ""), c.get("pid")
 
-    if not rip or is_private(rip):
+    # SysMonitor addition: a binary deleted after launch is a persistence
+    # trick, so it is scored even when the destination is private.
+    deleted = exe.endswith(" (deleted)")
+    if not rip or (is_private(rip) and not deleted):
         return None
     if al:
         reason = al.suppresses_conn(c)
         if reason:
             return None  # explicitly allowed
+
+    if deleted:
+        return Finding(
+            "live.deleted_exe",
+            "high",
+            "Connection from process whose binary was deleted from disk",
+            detail=f"PID {pid} [{proc}] @ {exe} → {rip}:{rport}",
+            source=exe,
+        )
 
     if rport and rport in SUSPICIOUS_PORTS:
         return Finding(

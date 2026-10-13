@@ -312,6 +312,54 @@ def _check_alerts(nid, online, status=None, security=None):
                     _nodes[nid]["_alert_state"]["security_alert"] = security_bad
 
 
+_IP_CACHE_TTL = 300
+_ip_cache: dict = {}
+
+
+def _resolve_host(host):
+    """Resolve a node host (IP or mDNS name) to an IP, cached for 5 minutes.
+    Returns None if it doesn't resolve."""
+    now = time.time()
+    hit = _ip_cache.get(host)
+    if hit and hit[1] > now:
+        return hit[0]
+    try:
+        ip = socket.gethostbyname(host)
+    except OSError:
+        ip = None
+    _ip_cache[host] = (ip, now + _IP_CACHE_TTL)
+    return ip
+
+
+def _find_lateral(nid, security):
+    """Fleet-aware scoring: flag a node's connection to another registered
+    node on a port that node hasn't declared. The node agent skips private
+    destinations entirely, so this is the only place that can see
+    node-to-node pivots. Returns a list of finding dicts.
+    """
+    nodes = _get_all_nodes()
+    by_ip = {}
+    for other_id, other in nodes.items():
+        ip = _resolve_host(other["host"])
+        if ip and other_id != nid:
+            by_ip[ip] = other
+    found = []
+    for conn in security.get("internal_connections") or []:
+        dest = by_ip.get(conn.get("rip"))
+        declared = ((dest or {}).get("security") or {}).get("declared_ports")
+        if dest is None or declared is None or conn.get("rport") in declared:
+            continue
+        found.append(
+            {
+                "category": "fleet.undeclared_port",
+                "severity": "high",
+                "description": "Connection to another fleet node on an undeclared port",
+                "detail": f"{conn.get('proc')} → {dest.get('label') or dest['id']}:{conn.get('rport')}",
+            }
+        )
+    return found
+
+
 def _poll_node(nid):
     """Poll a single node for status + boot info. Updates state in-place."""
     with _nodes_lock:
@@ -354,6 +402,13 @@ def _poll_node(nid):
                 _nodes[nid]["llm"] = llm
             if security is not None:
                 _nodes[nid]["security"] = security
+
+    if security is not None:
+        lateral = _find_lateral(nid, security)
+        with _nodes_lock:
+            if nid in _nodes:
+                _nodes[nid]["security_lateral"] = lateral
+        security = {**security, "actionable_count": security.get("actionable_count", 0) + len(lateral)}
 
     _check_alerts(nid, online=True, status=status, security=security)
 
@@ -516,7 +571,9 @@ def _serialize_node(n):
         "llm_serving_count": sum(1 for s in (n.get("llm") or []) if s.get("serving")),
         # Security status (hiddenscope) on this node
         "security_available": (n.get("security") or {}).get("available", False),
-        "security_actionable_count": (n.get("security") or {}).get("actionable_count", 0),
+        "security_actionable_count": (n.get("security") or {}).get("actionable_count", 0)
+        + len(n.get("security_lateral") or []),
+        "security_lateral": n.get("security_lateral") or [],
         "security_flagged_listeners": (n.get("security") or {}).get("flagged_listeners", []),
     }
 

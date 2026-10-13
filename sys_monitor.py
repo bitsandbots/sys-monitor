@@ -1278,15 +1278,40 @@ def _record_watch_alert(finding_dict: dict) -> None:
             log_event(f"Failed to write security watch log: {e}", "error")
 
 
-def _watch_tick(tracker) -> int:
+_WATCH_SEEN_MAX = 5000
+
+
+def _watch_tick(tracker, seen_dests: set, warmup: bool = False) -> int:
     """One watcher sample: score connections, record new at/above-threshold
-    findings (deduped by the tracker's cooldown). Returns alerts recorded."""
+    findings (deduped by the tracker's cooldown), and record the first time
+    each process reaches each external IP. warmup=True fills seen_dests
+    without alerting, so a restart doesn't flag every existing connection.
+    Returns alerts recorded."""
     al = _load_hs_allowlist()
     threshold = _hs._sev(HIDDENSCOPE_MIN_SEVERITY)
     active, recorded = set(), 0
     for c in _hs._connections():
         f = _hs.score_connection(c, al)
-        if not f or _hs._sev(f.severity) < threshold:
+        if not f:
+            continue
+        dest = (c.get("proc"), c.get("rip"))
+        if dest not in seen_dests:
+            # ponytail: in-memory only, cleared at the cap; persist if restarts matter
+            if len(seen_dests) >= _WATCH_SEEN_MAX:
+                seen_dests.clear()
+            seen_dests.add(dest)
+            if not warmup:
+                first = _hs.Finding(
+                    "live.first_seen",
+                    "medium",
+                    "First connection from this process to this external IP",
+                    detail=f"PID {c.get('pid')} [{c.get('proc')}] → "
+                    f"{c.get('rip')}:{c.get('rport')}",
+                    source=c.get("exe") or c.get("proc") or "",
+                )
+                _record_watch_alert(first.to_dict())
+                recorded += 1
+        if _hs._sev(f.severity) < threshold:
             continue
         key = f"{c.get('proc')}|{c.get('raddr')}"
         active.add(key)
@@ -1300,9 +1325,12 @@ def _watch_tick(tracker) -> int:
 def _security_watcher_loop() -> None:
     """Daemon loop around _watch_tick(); one bad sample never kills it."""
     tracker = _hs.AlertTracker(cooldown=HIDDENSCOPE_WATCH_COOLDOWN)
+    seen_dests: set = set()
+    warmup = True
     while True:
         try:
-            _watch_tick(tracker)
+            _watch_tick(tracker, seen_dests, warmup)
+            warmup = False
         except Exception as e:  # defensive: no supervisor restarts this thread
             log_event(f"Security watcher error: {e}", "error")
         time.sleep(HIDDENSCOPE_WATCH_INTERVAL)
@@ -1395,6 +1423,18 @@ def get_security_status() -> dict:
         "findings": findings,
         "actionable_count": len(actionable),
         "flagged_listeners": flagged_listeners,
+        "internal_connections": [
+            {"rip": c["rip"], "rport": c["rport"], "proc": c.get("proc")}
+            for c in conns
+            if c.get("status") == "ESTABLISHED"
+            and c.get("rip")
+            and _hs.is_private(c["rip"])
+            and not c["rip"].startswith(("127.", "::1"))
+        ],
+        "declared_ports": sorted(
+            {CONFIG["port"], *al.ports}
+            | {_SERVICE_PORTS[s.lower()] for s in CONFIG["services"] if s.lower() in _SERVICE_PORTS}
+        ),
         "summary": {
             "total_connections": len(conns),
             "external_connections": sum(
