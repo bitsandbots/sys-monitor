@@ -1125,6 +1125,7 @@ def score_connection(c: ConnDict, al: Optional[AllowList] = None) -> Optional[Fi
         )
 
     # SysMonitor addition: hidden user dirs are a common implant staging area.
+    # SysMonitor addition: hidden user dirs are a common implant staging area.
     if exe and re.match(r"^/(?:home/[^/]+|root)/\.(?:cache|config)/", exe):
         return Finding(
             "live.suspicious_exe",
