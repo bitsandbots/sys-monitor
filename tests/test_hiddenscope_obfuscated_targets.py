@@ -15,6 +15,15 @@ CASES = [
      "String decoded from literal byte list", "medium"),
     ("requests.get(base64.b64decode(CFG))\n",
      "Network call target decoded from base64", "high"),
+    ("h = socket.inet_ntoa(T.to_bytes(4, 'big'))\n",
+     "IP address built from packed/integer value", "high"),
+    ("u = bytes.fromhex('68747470').decode()\n", "String decoded from hex", "medium"),
+    ("u = ''.join(chr(c) for c in codes)\n", "String assembled from chr() codes", "medium"),
+    ("u = codecs.decode(s, 'rot13')\n", "String decoded with rot13", "medium"),
+    ("fetch(atob(CFG), {method: 'POST'})\n",
+     "Network call target decoded from base64", "high"),
+    ("u = base64.b64decode(CFG).decode()\nx = 1\nrequests.post(u, data=d)\n",
+     "Network call target is a decoded variable", "high"),
 ]
 
 
@@ -33,6 +42,8 @@ def test_obfuscated_target_detected(tmp_path, src, desc, sev):
         "name = bytes([1, 2]).decode()\n",              # too short to hide a host
         "requests.get('https://api.example.com')\n",    # literal target
         "# socket.inet_ntoa(struct.pack('!I', 1))\n",   # commented out
+        "k = base64.b64decode(K)\nrequests.get('https://api.example.com')\n",  # decoded var unused as target
+        "s = ''.join(parts)\n",                        # plain join
     ],
 )
 def test_benign_code_not_flagged(tmp_path, src):
