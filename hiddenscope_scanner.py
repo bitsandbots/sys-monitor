@@ -774,7 +774,7 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
     # ── Obfuscated network targets (hide *where* a call goes) ────────────────
     # SysMonitor addition: not in upstream hiddenscope.
     (
-        re.compile(r"inet_ntoa\s*\(\s*(?:struct\s*\.\s*pack\s*\(|\d{7,10}\b|0x[0-9a-fA-F]{6,8}\b)"),
+        re.compile(r"inet_ntoa\s*\(\s*(?:struct\s*\.\s*pack\s*\(|\w+\s*\.\s*to_bytes\s*\(|\d{7,10}\b|0x[0-9a-fA-F]{6,8}\b)"),
         "IP address built from packed/integer value",
         "high",
     ),
@@ -795,10 +795,36 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
     ),
     (
         re.compile(
-            r"(?:connect|create_connection|urlopen|get|post|request)\s*\([^)\n]*"
-            r"(?:b64decode|base64_decode|atob)\s*\("
+            r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\([^)\n]*"
+            r"(?:b64decode|base64_decode|atob|fromhex|unhexlify)\s*\("
         ),
         "Network call target decoded from base64",
+        "high",
+    ),
+    (
+        re.compile(r"(?:bytes\s*\.\s*fromhex|unhexlify)\s*\([^)\n]*\)\s*\.\s*decode"),
+        "String decoded from hex",
+        "medium",
+    ),
+    (
+        re.compile(r"\.\s*join\s*\(\s*(?:map\s*\(\s*chr\b|chr\s*\()"),
+        "String assembled from chr() codes",
+        "medium",
+    ),
+    (
+        re.compile(r"codecs\s*\.\s*decode\s*\([^)\n]*rot_?13"),
+        "String decoded with rot13",
+        "medium",
+    ),
+    (
+        # Decoded value assigned first, then passed as a network target within
+        # a few lines (defeats the single-expression rule above).
+        re.compile(
+            r"\b(\w+)\s*=[^\n]*(?:b64decode|atob|fromhex|unhexlify)\s*\([^\n]*\n"
+            r"(?:[^\n]*\n){0,8}?[^\n]*"
+            r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\(\s*\1\b"
+        ),
+        "Network call target is a decoded variable",
         "high",
     ),
 ]
@@ -1094,6 +1120,17 @@ def score_connection(c: ConnDict, al: Optional[AllowList] = None) -> Optional[Fi
             "live.suspicious_exe",
             "high",
             "External connection from process in suspicious filesystem path",
+            detail=f"PID {pid} [{proc}] @ {exe} → {rip}:{rport}",
+            source=exe,
+        )
+
+    # SysMonitor addition: hidden user dirs are a common implant staging area.
+    # SysMonitor addition: hidden user dirs are a common implant staging area.
+    if exe and re.match(r"^/(?:home/[^/]+|root)/\.(?:cache|config)/", exe):
+        return Finding(
+            "live.suspicious_exe",
+            "medium",
+            "External connection from executable in a hidden user directory",
             detail=f"PID {pid} [{proc}] @ {exe} → {rip}:{rport}",
             source=exe,
         )

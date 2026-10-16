@@ -167,6 +167,19 @@ def test_score_connection_suspicious_exe_path_is_high():
     assert finding.category == "live.suspicious_exe"
 
 
+def test_score_connection_hidden_user_dir_exe_is_medium():
+    conn = {
+        "rip": "8.8.8.8",
+        "rport": 443,
+        "proc": "x",
+        "pid": 1,
+        "exe": "/home/HARNESS_user/.cache/x",
+    }
+    finding = hs.score_connection(conn)
+    assert finding.category == "live.suspicious_exe"
+    assert finding.severity == "medium"
+
+
 def test_score_connection_plain_external_is_info():
     conn = {
         "rip": "93.184.216.34",
