@@ -10,7 +10,10 @@ dependency). SysMonitor calls `_connections()`, `_listeners()`,
 `sys_monitor.py`'s "Security Monitoring" section to power the dashboard's
 Security tab and alert card. This file also remains fully usable standalone
 as the original `hiddenscope` CLI (`python3 hiddenscope_scanner.py live`,
-`scan`, `watch`, `report`, etc.) — nothing below this note has been changed.
+`scan`, `watch`, `report`, etc.) — nothing below this note has been changed
+except SysMonitor additions marked "SysMonitor addition" (obfuscated
+network-target patterns in SOURCE_PATTERNS, deleted-binary check in
+score_connection).
 
 Subcommands:
   live       Active TCP/UDP connections with process mapping
@@ -768,6 +771,62 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
         "Raw socket connect/bind",
         "low",
     ),
+    # ── Obfuscated network targets (hide *where* a call goes) ────────────────
+    # SysMonitor addition: not in upstream hiddenscope.
+    (
+        re.compile(r"inet_ntoa\s*\(\s*(?:struct\s*\.\s*pack\s*\(|\w+\s*\.\s*to_bytes\s*\(|\d{7,10}\b|0x[0-9a-fA-F]{6,8}\b)"),
+        "IP address built from packed/integer value",
+        "high",
+    ),
+    (
+        re.compile(r"ip_address\s*\(\s*(?:\d{8,10}|0x[0-9a-fA-F]{8})\s*\)"),
+        "IP address from integer literal",
+        "high",
+    ),
+    (
+        re.compile(r"""["']\.["']\s*\.\s*join\s*\(\s*\[?\s*str\s*\("""),
+        "IP address assembled from joined octets",
+        "medium",
+    ),
+    (
+        re.compile(r"bytes\s*\(\s*\[\s*\d+(?:\s*,\s*\d+){5,}\s*,?\s*\]\s*\)\s*\.\s*decode"),
+        "String decoded from literal byte list",
+        "medium",
+    ),
+    (
+        re.compile(
+            r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\([^)\n]*"
+            r"(?:b64decode|base64_decode|atob|fromhex|unhexlify)\s*\("
+        ),
+        "Network call target decoded from base64",
+        "high",
+    ),
+    (
+        re.compile(r"(?:bytes\s*\.\s*fromhex|unhexlify)\s*\([^)\n]*\)\s*\.\s*decode"),
+        "String decoded from hex",
+        "medium",
+    ),
+    (
+        re.compile(r"\.\s*join\s*\(\s*(?:map\s*\(\s*chr\b|chr\s*\()"),
+        "String assembled from chr() codes",
+        "medium",
+    ),
+    (
+        re.compile(r"codecs\s*\.\s*decode\s*\([^)\n]*rot_?13"),
+        "String decoded with rot13",
+        "medium",
+    ),
+    (
+        # Decoded value assigned first, then passed as a network target within
+        # a few lines (defeats the single-expression rule above).
+        re.compile(
+            r"\b(\w+)\s*=[^\n]*(?:b64decode|atob|fromhex|unhexlify)\s*\([^\n]*\n"
+            r"(?:[^\n]*\n){0,8}?[^\n]*"
+            r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\(\s*\1\b"
+        ),
+        "Network call target is a decoded variable",
+        "high",
+    ),
 ]
 
 # Extension / filename sets
@@ -1028,12 +1087,24 @@ def score_connection(c: ConnDict, al: Optional[AllowList] = None) -> Optional[Fi
     rip, rport = c.get("rip"), c.get("rport")
     proc, exe, pid = c.get("proc", "?"), c.get("exe", ""), c.get("pid")
 
-    if not rip or is_private(rip):
+    # SysMonitor addition: a binary deleted after launch is a persistence
+    # trick, so it is scored even when the destination is private.
+    deleted = exe.endswith(" (deleted)")
+    if not rip or (is_private(rip) and not deleted):
         return None
     if al:
         reason = al.suppresses_conn(c)
         if reason:
             return None  # explicitly allowed
+
+    if deleted:
+        return Finding(
+            "live.deleted_exe",
+            "high",
+            "Connection from process whose binary was deleted from disk",
+            detail=f"PID {pid} [{proc}] @ {exe} → {rip}:{rport}",
+            source=exe,
+        )
 
     if rport and rport in SUSPICIOUS_PORTS:
         return Finding(
@@ -1049,6 +1120,17 @@ def score_connection(c: ConnDict, al: Optional[AllowList] = None) -> Optional[Fi
             "live.suspicious_exe",
             "high",
             "External connection from process in suspicious filesystem path",
+            detail=f"PID {pid} [{proc}] @ {exe} → {rip}:{rport}",
+            source=exe,
+        )
+
+    # SysMonitor addition: hidden user dirs are a common implant staging area.
+    # SysMonitor addition: hidden user dirs are a common implant staging area.
+    if exe and re.match(r"^/(?:home/[^/]+|root)/\.(?:cache|config)/", exe):
+        return Finding(
+            "live.suspicious_exe",
+            "medium",
+            "External connection from executable in a hidden user directory",
             detail=f"PID {pid} [{proc}] @ {exe} → {rip}:{rport}",
             source=exe,
         )
@@ -1488,12 +1570,17 @@ def baseline_diff(saved_path: Path, al: Optional[AllowList] = None) -> List[Find
     for addr in cur_r - saved_r:
         ip, port = _parse_addr(addr)
         if ip and not is_private(ip):
+            procs = [c for c in cur_conns if c.get("raddr") == addr]
             # Check allowlist
-            dummy_conn: ConnDict = {"rip": ip, "rport": port, "proc": "", "pid": None}
+            dummy_conn: ConnDict = {
+                "rip": ip,
+                "rport": port,
+                "proc": procs[0]["proc"] if procs else "",
+                "pid": None,
+            }
             if al.suppresses_conn(dummy_conn):
                 continue
             sev = "high" if port and port in SUSPICIOUS_PORTS else "medium"
-            procs = [c for c in cur_conns if c.get("raddr") == addr]
             pstr = ", ".join(f"PID {c['pid']} [{c['proc']}]" for c in procs) or "?"
             findings.append(
                 Finding(
@@ -2093,9 +2180,12 @@ def cmd_report(args: argparse.Namespace, al: AllowList) -> int:
         },
     }
 
+    threshold = _sev(args.severity)
+    code = 1 if any(_sev(f.severity) >= threshold for f in findings) else 0
+
     if args.json:
         print(json.dumps(report, indent=2))
-        return 0
+        return code
 
     s = report["summary"]
     print(
@@ -2136,8 +2226,7 @@ def cmd_report(args: argparse.Namespace, al: AllowList) -> int:
         _hdr(f"Live findings ({len(findings)})")
         print_findings(findings, min_sev=args.severity)
 
-    threshold = _sev(args.severity)
-    return 1 if any(_sev(f.severity) >= threshold for f in findings) else 0
+    return code
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

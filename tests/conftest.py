@@ -34,6 +34,17 @@ def isolate_module_state():
     sys_monitor._BOOT_INFO.update(boot_info_snapshot)
 
 
+@pytest.fixture(autouse=True)
+def isolate_security_state(monkeypatch, tmp_path):
+    """Point the baseline/watch-log files at tmp and empty the watcher ring,
+    so no test reads or writes real runtime state."""
+    monkeypatch.setattr(sys_monitor, "_HS_BASELINE_FILE", tmp_path / "HARNESS_baseline.json")
+    monkeypatch.setattr(sys_monitor, "HIDDENSCOPE_WATCH_LOG", "")
+    sys_monitor._watch_alerts.clear()
+    yield
+    sys_monitor._watch_alerts.clear()
+
+
 @pytest.fixture
 def node_client():
     """Flask test client for the node agent."""

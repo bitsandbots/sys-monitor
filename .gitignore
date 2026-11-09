@@ -10,3 +10,4 @@ build/
 .pytest_cache/
 *.log
 .remember/
+hiddenscope_baseline.json

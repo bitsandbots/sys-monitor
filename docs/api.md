@@ -397,6 +397,8 @@ Full hiddenscope security status: live findings, actionable count, flagged liste
 
 > `actionable_count` counts findings with severity `>=` `HIDDENSCOPE_MIN_SEVERITY` (default `high`) — this is what drives the Security Alert card.
 > `flagged_listeners` are listening ports matching hiddenscope's suspicious-port list that aren't allowlisted. `known_local_service: true` means the port also matches a locally-known service (e.g. LM Studio on 1234) — it's annotated, not suppressed, so you can decide whether to allowlist it.
+> `GET /api/security` also returns `actionable_findings` (up to 10 findings at/above the threshold), `internal_connections` (established connections to non-loopback private addresses — the Hub uses these for fleet-aware scoring) and `declared_ports` (agent port, allowlisted ports, and ports of configured services). Findings include live scoring (`live.suspicious_port`, `live.suspicious_exe`, `live.deleted_exe` for a process whose binary was deleted from disk, `live.external`), watcher alerts (including `live.first_seen`, the first time a process reaches an external IP since the agent started; `medium`), and baseline diffs. Watcher alerts are retained for `HIDDENSCOPE_WATCH_RETENTION` seconds so a connection that closed between polls still shows up.
+>
 > Live scoring alone only ever produces `high` or `info` findings; `medium`/`critical` findings come from the on-demand static scan (`POST /api/security/scan`).
 
 #### `GET /api/security/allowlist`
@@ -436,6 +438,12 @@ Remove an allowlist entry (same body shape as `POST`: `port`, `proc`, and/or `ne
 Returns `404` with `{"success": false, "error": "entry not found"}` if nothing in the body matched an existing entry; `400` if hiddenscope is unavailable.
 
 Allowlist changes persist to `HIDDENSCOPE_ALLOWLIST_FILE` (default `./hiddenscope_allowlist.json`).
+
+#### `GET /api/security/baseline`
+`{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}`.
+
+#### `POST /api/security/baseline`
+Requires the bearer token when one is configured. Snapshots current connections and listeners to `HIDDENSCOPE_BASELINE_FILE`; from then on `GET /api/security` adds `baseline.new_listener` / `baseline.new_external` findings for anything not in the snapshot. Returns `{"success": true, "captured_at": "..."}`.
 
 #### `POST /api/security/scan`
 Run hiddenscope's static scan (`scan_tree()`) for hardcoded secrets and reverse-shell patterns against a directory. The path is **never** accepted from the request — it comes only from the server-side `HIDDENSCOPE_SCAN_PATH` environment variable, so a client can trigger a scan but can't choose what gets scanned.
@@ -659,7 +667,7 @@ Events: `node_offline` / `node_online`, `temperature_alert` / `temperature_recov
 }
 ```
 
-`detail` carries event-specific extra fields where relevant (e.g. `{"level": "critical"}` for a temperature alert, `{"actionable_count": 2}` for a security alert) — empty object otherwise. Delivery failures (unreachable/slow receiver) are swallowed silently, same as the Hub's node-polling HTTP calls — a broken webhook receiver never stalls fleet polling.
+`detail` carries event-specific extra fields where relevant (e.g. `{"level": "critical"}` for a temperature alert; for a security alert `{"actionable_count": 2, "findings": [{"category", "severity", "description", "detail"}]}`). A `security_alert` fires on the first actionable finding and again whenever a finding not yet reported appears while the node is already alerting (`findings` then lists only the new ones). The Hub also adds `fleet.undeclared_port` findings — a node connecting to another registered node on a port that node hasn't declared — empty object otherwise. Delivery failures (unreachable/slow receiver) are swallowed silently, same as the Hub's node-polling HTTP calls — a broken webhook receiver never stalls fleet polling.
 
 ---
 
