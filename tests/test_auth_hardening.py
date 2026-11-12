@@ -3,6 +3,7 @@ toggle, DNS-rebinding Host guard, and security headers.
 
 Tokens here are HARNESS_-prefixed fixtures, never real credentials.
 """
+
 import pytest
 
 import sys_monitor
@@ -81,7 +82,11 @@ def test_lan_bypass_is_off_by_default():
 
     env = {k: v for k, v in os.environ.items() if k != "SYSMONITOR_LAN_NO_AUTH"}
     out = subprocess.run(
-        [sys.executable, "-c", "import sys_monitor as m; print(m.CONFIG['lan_no_auth'])"],
+        [
+            sys.executable,
+            "-c",
+            "import sys_monitor as m; print(m.CONFIG['lan_no_auth'])",
+        ],
         capture_output=True,
         text=True,
         env=env,
