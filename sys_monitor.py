@@ -16,16 +16,18 @@ CoreConduit Consulting Services — https://coreconduit.com
 License: MIT
 """
 
+import hmac
 import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -45,6 +47,10 @@ CONFIG = {
     "debug": os.getenv("SYSMONITOR_DEBUG", "false").lower() == "true",
     "auth_token": os.getenv("SYSMONITOR_TOKEN", ""),
     "config_token": os.getenv("SYSMONITOR_CONFIG_TOKEN", ""),
+    # Opt-in: clients on loopback / private LAN ranges skip the token (put a
+    # firewall in front of the port). Off by default, so a token is required
+    # from every client unless SYSMONITOR_LAN_NO_AUTH=true.
+    "lan_no_auth": os.getenv("SYSMONITOR_LAN_NO_AUTH", "false").lower() == "true",
     "services": [
         s.strip()
         for s in os.getenv(
@@ -201,15 +207,69 @@ def detect_system():
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth Middleware
 # ═══════════════════════════════════════════════════════════════════════════
+_AUTH_FAIL_MAX = 10  # failed attempts allowed per window, per client IP
+_AUTH_FAIL_WINDOW = 60  # seconds
+_auth_failures: "defaultdict[str, deque]" = defaultdict(deque)
+_auth_lock = threading.Lock()
+
+
+def _client_ip() -> str:
+    return request.remote_addr or "unknown"
+
+
+def _is_lan_client(ip: str) -> bool:
+    """True for loopback, RFC1918/ULA private, and link-local client addresses."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
+def _auth_locked_out(ip: str) -> bool:
+    """True if ip has hit the failed-auth limit inside the window."""
+    now = time.time()
+    with _auth_lock:
+        q = _auth_failures[ip]
+        while q and now - q[0] > _AUTH_FAIL_WINDOW:
+            q.popleft()
+        return len(q) >= _AUTH_FAIL_MAX
+
+
+def _auth_record_failure(ip: str) -> None:
+    with _auth_lock:
+        _auth_failures[ip].append(time.time())
+
+
 def require_auth(f):
-    """Optional bearer-token authentication."""
+    """Bearer-token authentication.
+
+    With a token configured, every request must present it (constant-time
+    compare, per-IP lockout, failures logged); loopback/private-LAN clients are
+    exempt only when SYSMONITOR_LAN_NO_AUTH=true. With no token configured, auth is off (as in
+    upstream v2.5.1).
+    """
 
     @wraps(f)
     def decorated(*args, **kwargs):
         token = CONFIG["auth_token"]
+        ip = _client_ip()
+        if token and CONFIG["lan_no_auth"] and _is_lan_client(ip):
+            return f(*args, **kwargs)
         if token:
-            auth = request.headers.get("Authorization", "")
-            if auth != f"Bearer {token}":
+            if _auth_locked_out(ip):
+                log_event(f"Auth lockout: {ip}", "warning")
+                abort(429, description="Too many failed attempts")
+            supplied = request.headers.get("Authorization", "")
+            expected = f"Bearer {token}"
+            if not hmac.compare_digest(supplied.encode(), expected.encode()):
+                _auth_record_failure(ip)
+                log_event(
+                    f"Auth failed: {request.method} {request.path} from {ip}",
+                    "warning",
+                )
                 abort(401, description="Unauthorized")
         return f(*args, **kwargs)
 
@@ -235,16 +295,55 @@ def require_config_auth(f):
         token = CONFIG["config_token"]
         if token:
             supplied = request.headers.get("X-Config-Token", "")
-            if supplied != token:
+            if not hmac.compare_digest(supplied.encode(), token.encode()):
                 abort(401, description="Unauthorized (config token required)")
         return f(*args, **kwargs)
 
     return decorated
 
 
+def _allowed_hosts() -> set:
+    hosts = {
+        h.strip().lower()
+        for h in os.getenv("SYSMONITOR_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    }
+    name = socket.gethostname().lower()
+    hosts |= {"localhost", name, f"{name}.local"}
+    return hosts
+
+
+_ALLOWED_HOSTS = _allowed_hosts()
+
+
+def _host_ok(hostport: str) -> bool:
+    """Accept IP literals and known names only (blocks DNS rebinding)."""
+    host = hostport.strip().lower()
+    if host.startswith("["):
+        host = host[1 : host.find("]")]
+    elif host.count(":") == 1:
+        host = host.split(":")[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return host in _ALLOWED_HOSTS
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
+
+
 @app.before_request
 def _csrf_guard():
-    """Reject cross-origin state-changing requests (CSRF via a plain form POST)."""
+    """Reject DNS rebinding (bad Host) and cross-origin state-changing requests."""
+    if not _host_ok(request.host):
+        abort(400, description="Host not allowed")
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return
     expected = f"{request.scheme}://{request.host}"
