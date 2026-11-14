@@ -1,0 +1,4 @@
+# /etc/sys-monitor/block-allowlist — addresses that must NEVER be blocked.
+# One IP or CIDR per line. LAN/private ranges are always refused regardless.
+# Add your own remote addresses (VPN exit, office, a trusted friend's IP).
+# 203.0.113.0/24   # example

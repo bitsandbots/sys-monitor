@@ -1232,7 +1232,25 @@ async function refreshThreats() {
       <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(f.message)}</div>
       <div style="font-size:10px;color:var(--text-muted)">${esc(new Date(f.ts * 1000).toLocaleString())}</div>
     </div>`).join('');
-  $('threat-body').innerHTML = problems + learn + rows;
+  const b = await api('blocks');
+  let blocks = '';
+  if (b && b.mode && b.mode !== 'off') {
+    const dry = (b.history || []).filter(h => h.status === 'would_block').length;
+    blocks = `<div class="llm-row"><span class="llm-row-label">IP blocker · ${esc(b.mode)}</span>` +
+      (b.mode === 'dry-run' ? `<div style="font-size:11px;color:var(--text-muted)">${dry} would-block decision(s) recorded; nothing is enforced</div>` : '') +
+      b.active.map(x => `<div style="font-size:11px;margin-top:3px"><span class="llm-chip">${esc(x.ip)}</span> ` +
+        `<span style="color:var(--text-muted)">until ${esc(new Date(x.expires * 1000).toLocaleString())} · ${esc(x.detector || x.source)}</span> ` +
+        `<a href="#" data-unblock="${esc(x.ip)}">unblock</a></div>`).join('') + '</div>';
+  }
+  $('threat-body').innerHTML = problems + learn + blocks + rows;
+  $('threat-body').querySelectorAll('[data-unblock]').forEach(a => a.addEventListener('click', async ev => {
+    ev.preventDefault();
+    const ip = a.getAttribute('data-unblock');
+    if (!confirm('Unblock ' + ip + '?')) return;
+    const r = await fetch('/api/blocks/' + encodeURIComponent(ip), { method: 'DELETE' });
+    if (!r.ok) alert('Unblock failed: ' + r.statusText);
+    refreshThreats();
+  }));
 }
 
 // ── LLM Service Polling (separate endpoint, less frequent — involves
