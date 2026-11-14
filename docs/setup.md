@@ -92,6 +92,7 @@ Edit `/etc/systemd/system/sys-monitor.service` to set environment variables befo
 | `SYSMONITOR_HISTORY_DB` | _(auto)_ | SQLite file for metrics history. Defaults to `$STATE_DIRECTORY/metrics.db` under systemd (`/var/lib/sys-monitor`); history is off when neither is set |
 | `SYSMONITOR_HISTORY_INTERVAL` | `60` | Seconds between history samples (min 5) |
 | `SYSMONITOR_HISTORY_DAYS` | `7` | Retention in days; older samples are pruned hourly |
+| `SYSMONITOR_DOCKER_SOCKETS` | _(empty)_ | Comma-separated Docker socket paths to monitor read-only (e.g. `/var/run/docker.sock`). Off by default: the service user needs socket access, which is root-equivalent on rootful daemons |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list |
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity counted as "actionable" (drives the Security Alert card) |
 | `HIDDENSCOPE_SCAN_PATH` | _(empty)_ | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |

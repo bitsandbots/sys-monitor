@@ -17,6 +17,7 @@ License: MIT
 """
 
 import hmac
+import http.client
 import ipaddress
 import json
 import os
@@ -79,6 +80,11 @@ CONFIG = {
     ),
     "history_interval": float(os.getenv("SYSMONITOR_HISTORY_INTERVAL", "60")),
     "history_days": float(os.getenv("SYSMONITOR_HISTORY_DAYS", "7")),
+    # Docker monitoring is opt-in: comma-separated unix socket paths. Reading
+    # a Docker socket needs access that is root-equivalent on rootful daemons.
+    "docker_sockets": [
+        x.strip() for x in os.getenv("SYSMONITOR_DOCKER_SOCKETS", "").split(",") if x.strip()
+    ],
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1605,9 +1611,7 @@ def start_security_watcher() -> bool:
     """Start the watcher thread if hiddenscope is present and interval > 0."""
     if not HIDDENSCOPE_AVAILABLE or HIDDENSCOPE_WATCH_INTERVAL <= 0:
         return False
-    threading.Thread(
-        target=_security_watcher_loop, daemon=True, name="security-watcher"
-    ).start()
+    _spawn("security-watcher", _security_watcher_loop)
     return True
 
 
@@ -1800,6 +1804,86 @@ def get_log(limit: int = 100) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Background thread registry (for /healthz)
+# ═══════════════════════════════════════════════════════════════════════════
+_bg_threads: dict = {}
+
+
+def _spawn(name: str, target) -> None:
+    """Start a daemon thread and register it so /healthz can check liveness."""
+    t = threading.Thread(target=target, daemon=True, name=name)
+    t.start()
+    _bg_threads[name] = t
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Docker (read-only, opt-in)
+# ═══════════════════════════════════════════════════════════════════════════
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection over a unix socket (stdlib only)."""
+
+    def __init__(self, path: str, timeout: float = 3.0) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self._sock_path = path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self._sock_path)
+
+
+_HEALTH_RE = re.compile(r"\((healthy|unhealthy|health: starting)\)")
+
+
+def _docker_list(sock_path: str) -> list:
+    """GET /containers/json?all=1 from one daemon (the only call made).
+
+    Raises:
+        OSError / ValueError / http.client.HTTPException on failure.
+    """
+    conn = _UnixHTTPConnection(sock_path)
+    try:
+        conn.request("GET", "/containers/json?all=1")
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise ValueError(f"Docker API returned HTTP {resp.status}")
+        return json.loads(resp.read())
+    finally:
+        conn.close()
+
+
+def get_containers() -> dict:
+    """Container state per configured Docker daemon.
+
+    Returns:
+        {"enabled": bool, "daemons": [{"socket", "available", "error",
+        "containers": [{"name","image","state","status","health"}]}]}.
+        A daemon that cannot be reached is reported, never raised.
+    """
+    daemons = []
+    for sock in CONFIG["docker_sockets"]:
+        entry = {"socket": sock, "available": False, "error": None, "containers": []}
+        try:
+            for c in _docker_list(sock):
+                status = c.get("Status", "")
+                m = _HEALTH_RE.search(status)
+                entry["containers"].append(
+                    {
+                        "name": (c.get("Names") or ["?"])[0].lstrip("/"),
+                        "image": c.get("Image", ""),
+                        "state": c.get("State", "unknown"),
+                        "status": status,
+                        "health": m.group(1).replace("health: ", "") if m else None,
+                    }
+                )
+            entry["available"] = True
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        daemons.append(entry)
+    return {"enabled": bool(CONFIG["docker_sockets"]), "daemons": daemons}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Outbound Alerting
 # ═══════════════════════════════════════════════════════════════════════════
 _alert_lock = threading.Lock()
@@ -1845,6 +1929,15 @@ def _collect_alert_conditions() -> dict:
     for svc in get_critical_services_status():
         name = svc.get("name") or svc.get("service") or str(svc)
         bad[f"service:{name}"] = ("critical", f"Critical service down: {name}")
+
+    if CONFIG["docker_sockets"]:
+        for d in get_containers()["daemons"]:
+            for c in d["containers"]:
+                if c["state"] == "restarting" or c["health"] == "unhealthy":
+                    bad[f"container:{c['name']}"] = (
+                        "warning",
+                        f"Container {c['name']} is {c['health'] or c['state']}",
+                    )
 
     if HIDDENSCOPE_AVAILABLE:
         sec = get_security_status()
@@ -1958,7 +2051,7 @@ def start_alerting() -> bool:
         return False
     if CONFIG["alert_interval"] <= 0:
         return False
-    threading.Thread(target=_alert_loop, daemon=True, name="alert-sampler").start()
+    _spawn("alert-sampler", _alert_loop)
     return True
 
 
@@ -2094,7 +2187,7 @@ def start_history() -> bool:
     except (sqlite3.Error, OSError) as exc:
         log_event(f"History disabled — cannot open {CONFIG['history_db']}: {exc}", "warning")
         return False
-    threading.Thread(target=_history_loop, daemon=True, name="history-sampler").start()
+    _spawn("history-sampler", _history_loop)
     return True
 
 
@@ -2150,6 +2243,24 @@ def api_storage():
 @require_auth
 def api_network():
     return jsonify(get_network())
+
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated liveness + background-thread check for supervisors.
+
+    Returns 200 when every started background thread (history, alerting,
+    security watcher) is alive, 503 with the dead ones listed otherwise.
+    """
+    dead = sorted(n for n, t in _bg_threads.items() if not t.is_alive())
+    body = {"ok": not dead, "threads": sorted(_bg_threads), "dead": dead}
+    return jsonify(body), (200 if not dead else 503)
+
+
+@app.route("/api/containers")
+@require_auth
+def api_containers():
+    return jsonify(get_containers())
 
 
 @app.route("/api/alerts")

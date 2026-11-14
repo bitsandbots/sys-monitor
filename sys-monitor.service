@@ -28,8 +28,14 @@ StateDirectory=sys-monitor
 ProtectSystem=strict
 ReadWritePaths=/opt/sys-monitor
 ProtectHome=true
+# NoNewPrivileges stays false: power/kill fall back to sudo on non-root installs.
 NoNewPrivileges=false
 PrivateTmp=true
+
+# Resource limits (protect small Pi boards from a leak or heavy scan)
+MemoryMax=256M
+TasksMax=128
+CPUQuota=50%
 
 [Install]
 WantedBy=multi-user.target

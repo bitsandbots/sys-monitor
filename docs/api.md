@@ -170,6 +170,25 @@ Per-interface stats with throughput rates.
 
 ---
 
+### Health Check
+
+#### `GET /healthz`
+Unauthenticated. `200 {"ok": true, "threads": [...], "dead": []}` when every started background thread (history, alerting, security watcher) is alive; `503` with the dead ones listed otherwise. Use this for supervisors/uptime checks; `/api/ping` only proves the web thread is up.
+
+---
+
+### Containers
+
+#### `GET /api/containers`
+Read-only Docker view. Disabled (`{"enabled": false, "daemons": []}`) unless `SYSMONITOR_DOCKER_SOCKETS` is set. Only `GET /containers/json?all=1` is ever issued. An unreachable daemon is reported with `available:false` and an `error`, not a 500. An unhealthy or restarting container raises a `container:<name>` outbound alert.
+
+```json
+{"enabled": true, "daemons": [{"socket": "/var/run/docker.sock", "available": true, "error": null,
+  "containers": [{"name": "web", "image": "nginx", "state": "running", "status": "Up 2 hours (healthy)", "health": "healthy"}]}]}
+```
+
+---
+
 ### History
 
 #### `GET /api/history`

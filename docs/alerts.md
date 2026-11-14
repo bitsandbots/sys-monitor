@@ -143,6 +143,7 @@ The node agent can push alerts without a dashboard open or a hub running. Set `S
 | `gpu_temp:<n>` | GPU temp ≥ `SYSMONITOR_ALERT_GPU_TEMP` | critical |
 | `vram:<n>` | VRAM ≥ `SYSMONITOR_ALERT_VRAM_PERCENT` | warning |
 | `service:<name>` | A critical system service is down | critical |
+| `container:<name>` | A monitored container is unhealthy or restarting (needs `SYSMONITOR_DOCKER_SOCKETS`) | warning |
 | `security` | hiddenscope reports actionable findings | critical |
 
 An alert fires after `SYSMONITOR_ALERT_CONFIRM` consecutive bad samples, notifies **once** per transition, and sends an `alert_recovered` event on the first clean sample. If a data source is unavailable (e.g. no `nvidia-smi`) its rules are skipped, never treated as recovered. Delivery failures are logged to the event log and never stop the sampler.
