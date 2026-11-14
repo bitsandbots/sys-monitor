@@ -33,6 +33,11 @@ Built for [CoreConduit Consulting Services](https://coreconduit.com) infrastruct
 - The Fleet Hub aggregates security alerts across every node — a "🛡 N security alerts" badge appears on flagged nodes, plus a fleet-wide "Security Alerts" tile on the Hub dashboard
 - Degrades gracefully: if `hiddenscope_scanner.py` isn't installed, the Security tab reports "unavailable" instead of breaking anything else
 
+### GPU & I/O
+- **GPU** — NVIDIA utilisation, VRAM, temperature, power and which processes hold VRAM (Overview card, shown only when `nvidia-smi` works)
+- **Disk I/O** — per-disk throughput, IOPS and busy % from `/proc/diskstats`
+- **NIC errors** — `rx/tx_errors` and `rx/tx_dropped` per interface in `/api/network`
+
 ### Service Control
 - View systemd service status (active/enabled state)
 - Start, stop, restart services
@@ -213,6 +218,8 @@ The web UI currently does not send auth headers — token auth is designed for A
 | `/api/services/config` | GET/POST | List / add a monitored service |
 | `/api/services/config/<svc>` | DELETE/PUT | Remove / rename a monitored service |
 | `/api/ports` | GET | Open TCP/UDP ports (well-known + registered range, 0-49151) |
+| `/api/gpu` | GET | NVIDIA GPU utilisation, VRAM, temperature, power and per-process VRAM (`available:false` without `nvidia-smi`) |
+| `/api/diskio` | GET | Per-disk read/write throughput, IOPS and busy % |
 | `/api/llm` | GET | Detected LLM-serving ports and, for each, whether it's serving a model and which one(s) |
 | `/api/security` | GET | hiddenscope security status — findings, actionable count, flagged listeners, summary |
 | `/api/security/allowlist` | GET/POST/DELETE | View / add / remove an allowlisted port, process, or network |
