@@ -761,6 +761,8 @@ Request body (optional):
 {"subnet": "192.168.1.0/24", "port": 8585}
 ```
 
+**mDNS mode:** `{"method": "mdns"}` lists nodes advertising `_sysmonitor._tcp` instead of scanning (a few seconds, no /24 sweep). It shells out to `avahi-browse -rpt` (package `avahi-utils`) on the hub; without it the route returns `501`. Entries have the same shape as a scan plus `version`, and the response includes `"method": "mdns"`. Nodes advertise themselves when `install.sh` finds `avahi-daemon` (it writes `/etc/avahi/services/sys-monitor.service`, template in `contrib/avahi/`). mDNS does not cross subnets/VLANs; use a subnet scan or add the node by IP for those. Any other `method` value → 400.
+
 Response:
 ```json
 {

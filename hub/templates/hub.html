@@ -596,6 +596,7 @@ body {
         <input class="discover-input" id="discover-subnet" type="text" placeholder="{{ local_ip | replace(local_ip.split('.')[-1], '0/24') }}" spellcheck="false">
         <input class="discover-input" id="discover-port" type="number" placeholder="8585" value="8585" style="max-width:90px">
         <button class="discover-btn" id="discover-go" onclick="runDiscovery()">Scan Subnet</button>
+        <button class="discover-btn" id="discover-mdns" onclick="runDiscovery('mdns')" title="Find nodes advertising _sysmonitor._tcp via mDNS (needs avahi-utils on the hub)">Find via mDNS</button>
       </div>
       <div class="discover-status" id="discover-status"></div>
     </div>
@@ -832,25 +833,33 @@ function confirmRemoveNode(id, label) {
 // ====================================================================
 // Discovery
 // ====================================================================
-async function runDiscovery() {
-  const btn = $('discover-go');
+async function runDiscovery(method) {
+  const mdns = method === 'mdns';
+  const btn = $(mdns ? 'discover-mdns' : 'discover-go');
   const subnet = $('discover-subnet').value.trim() || null;
   const port = parseInt($('discover-port').value) || null;
 
   btn.disabled = true;
   $('discover-ctl').classList.add('scanning');
-  $('discover-status').textContent = 'Scanning the network\u2026 this may take 30\u201345 seconds.';
+  $('discover-status').textContent = mdns
+    ? 'Listening for mDNS advertisements\u2026 a few seconds.'
+    : 'Scanning the network\u2026 this may take 30\u201345 seconds.';
   $('discover-results').innerHTML = '';
 
-  const r = await apiPost('discover', { subnet, port });
+  const r = await apiPost('discover', mdns ? { method: 'mdns' } : { subnet, port });
   btn.disabled = false;
   $('discover-ctl').classList.remove('scanning');
 
-  if (!r) { $('discover-status').textContent = 'Scan failed.'; return; }
+  if (!r) {
+    $('discover-status').textContent = mdns
+      ? 'mDNS discovery failed \u2014 is avahi-utils installed on the hub?'
+      : 'Scan failed.';
+    return;
+  }
   $('discover-status').textContent = 'Found ' + r.count + ' SysMonitor instance' + (r.count !== 1 ? 's' : '') + '.';
 
   if (r.found.length === 0) {
-    $('discover-results').textContent = 'No SysMonitor instances found on this subnet.';
+    $('discover-results').textContent = 'No SysMonitor instances found.';
     return;
   }
 
