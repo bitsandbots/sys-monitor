@@ -38,6 +38,10 @@ Built for [CoreConduit Consulting Services](https://coreconduit.com) infrastruct
 - **Disk I/O** — per-disk throughput, IOPS and busy % from `/proc/diskstats`
 - **NIC errors** — `rx/tx_errors` and `rx/tx_dropped` per interface in `/api/network`
 
+### History
+- Samples CPU, temperature, memory, network, disk and GPU every 60s into SQLite (7-day retention), with a History card on the Overview tab. Auto-enabled under the shipped systemd unit (`StateDirectory=sys-monitor`).
+- **NVIDIA GPU hosts:** the shipped unit's `PrivateDevices=true` hides the GPU. Install `contrib/sys-monitor-gpu.conf` as a drop-in (instructions inside the file) for `/api/gpu`.
+
 ### Service Control
 - View systemd service status (active/enabled state)
 - Start, stop, restart services
@@ -169,6 +173,9 @@ All configuration is via environment variables — no config files to manage.
 | `SYSMONITOR_ALERT_DISK_PERCENT` | `90` | Filesystem usage that triggers a disk alert |
 | `SYSMONITOR_ALERT_GPU_TEMP` | `83` | GPU temperature (°C) that triggers an alert |
 | `SYSMONITOR_ALERT_VRAM_PERCENT` | `95` | VRAM usage that triggers an alert |
+| `SYSMONITOR_HISTORY_DB` | _(auto)_ | SQLite file for metrics history. Defaults to `$STATE_DIRECTORY/metrics.db` under systemd (`/var/lib/sys-monitor`); history is off when neither is set |
+| `SYSMONITOR_HISTORY_INTERVAL` | `60` | Seconds between history samples (min 5) |
+| `SYSMONITOR_HISTORY_DAYS` | `7` | Retention in days; older samples are pruned hourly |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list across restarts |
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity that counts as "actionable" (drives the Security Alert card) — one of `info`, `low`, `medium`, `high`, `critical` |
 | `HIDDENSCOPE_SCAN_PATH` | *(empty)* | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |
@@ -225,6 +232,7 @@ The web UI currently does not send auth headers — token auth is designed for A
 | `/api/services/config` | GET/POST | List / add a monitored service |
 | `/api/services/config/<svc>` | DELETE/PUT | Remove / rename a monitored service |
 | `/api/ports` | GET | Open TCP/UDP ports (well-known + registered range, 0-49151) |
+| `/api/history` | GET | Recorded metric history (`?metric=&range=1h\|6h\|24h\|7d`) |
 | `/api/alerts` | GET | Firing outbound alerts + recent transition history |
 | `/api/gpu` | GET | NVIDIA GPU utilisation, VRAM, temperature, power and per-process VRAM (`available:false` without `nvidia-smi`) |
 | `/api/diskio` | GET | Per-disk read/write throughput, IOPS and busy % |

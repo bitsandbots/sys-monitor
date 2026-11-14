@@ -89,6 +89,9 @@ Edit `/etc/systemd/system/sys-monitor.service` to set environment variables befo
 | `SYSMONITOR_ALERT_DISK_PERCENT` | `90` | Filesystem usage that triggers a disk alert |
 | `SYSMONITOR_ALERT_GPU_TEMP` | `83` | GPU temperature (°C) that triggers an alert |
 | `SYSMONITOR_ALERT_VRAM_PERCENT` | `95` | VRAM usage that triggers an alert |
+| `SYSMONITOR_HISTORY_DB` | _(auto)_ | SQLite file for metrics history. Defaults to `$STATE_DIRECTORY/metrics.db` under systemd (`/var/lib/sys-monitor`); history is off when neither is set |
+| `SYSMONITOR_HISTORY_INTERVAL` | `60` | Seconds between history samples (min 5) |
+| `SYSMONITOR_HISTORY_DAYS` | `7` | Retention in days; older samples are pruned hourly |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list |
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity counted as "actionable" (drives the Security Alert card) |
 | `HIDDENSCOPE_SCAN_PATH` | _(empty)_ | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |

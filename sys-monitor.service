@@ -21,6 +21,9 @@ Environment=SYSMONITOR_PORT=8585
 # Environment=SYSMONITOR_SERVICES=ssh,nginx,docker,ollama,mosquitto
 # Environment=SYSMONITOR_REFRESH=2
 
+# Metrics history DB lives in /var/lib/sys-monitor (sets STATE_DIRECTORY)
+StateDirectory=sys-monitor
+
 # Hardening
 ProtectSystem=strict
 ReadWritePaths=/opt/sys-monitor

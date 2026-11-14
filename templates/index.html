@@ -519,6 +519,21 @@ body {
         <div style="display:flex;justify-content:space-around" id="net-quick"></div>
       </div>
 
+      <!-- History card — only shown when the node records metrics history -->
+      <div class="card" id="history-card" style="--accent-color:var(--blue);display:none">
+        <div class="card-hdr">📈 History
+          <span style="float:right;font-weight:400">
+            <select id="history-metric" onchange="refreshHistory()"></select>
+            <select id="history-range" onchange="refreshHistory()">
+              <option value="1h">1h</option><option value="6h">6h</option>
+              <option value="24h" selected>24h</option><option value="7d">7d</option>
+            </select>
+          </span>
+        </div>
+        <svg class="sparkline" id="history-chart" height="90"></svg>
+        <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono)" id="history-meta"></div>
+      </div>
+
       <!-- GPU card — only shown when nvidia-smi reports a GPU -->
       <div class="card" id="gpu-card" style="--accent-color:var(--green);display:none">
         <div class="card-hdr">🎮 GPU <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="gpu-count"></span></div>
@@ -1112,6 +1127,30 @@ async function pollHealthStatus() {
   if (health) checkHealthAlert(health);
 }
 
+// ── Metrics History (SQLite-backed; card hidden when disabled) ──
+async function refreshHistory(reload) {
+  const sel = $('history-metric');
+  if (reload || !sel.options.length) {
+    const list = await api('history');
+    if (!list || !list.enabled || !list.metrics || !list.metrics.length) {
+      $('history-card').style.display = 'none';
+      return;
+    }
+    const keep = sel.value;
+    sel.innerHTML = list.metrics.map(m => `<option value="${escAttr(m)}">${esc(m)}</option>`).join('');
+    sel.value = list.metrics.includes(keep) ? keep : (list.metrics.includes('cpu_percent') ? 'cpu_percent' : list.metrics[0]);
+  }
+  const d = await api('history?metric=' + encodeURIComponent(sel.value) + '&range=' + $('history-range').value);
+  if (!d || !d.enabled) return;
+  $('history-card').style.display = 'block';
+  const vals = d.points.map(p => p[1]);
+  const el = $('history-chart');
+  if (vals.length < 2) { el.innerHTML = ''; $('history-meta').textContent = 'Collecting data…'; return; }
+  drawSparkline(el, vals, 'var(--blue)');
+  $('history-meta').textContent =
+    `min ${Math.min(...vals)} · max ${Math.max(...vals)} · last ${vals[vals.length - 1]} · ${vals.length} pts`;
+}
+
 // ── GPU Polling (nvidia-smi; card hidden when unavailable) ──
 async function refreshGPU() {
   const g = await api('gpu');
@@ -1557,6 +1596,8 @@ async function init() {
   setInterval(refreshLLM, Math.max(REFRESH * 4, 8000));
   refreshGPU();
   setInterval(refreshGPU, Math.max(REFRESH * 2, 4000));
+  refreshHistory(true);
+  setInterval(() => refreshHistory(true), 60000);
   // Security scoring runs `ss` + connection scoring every cycle — same
   // cadence as LLM detection is a good balance of freshness vs. overhead.
   setInterval(refreshSecurity, Math.max(REFRESH * 4, 8000));
