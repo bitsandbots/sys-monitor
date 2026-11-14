@@ -160,6 +160,8 @@ def test_get_network_reports_interfaces(monkeypatch, tmp_path):
             "/sys/class/net/eth0/address": "aa:bb:cc:dd:ee:ff",
             "/sys/class/net/eth0/statistics/rx_bytes": "2048",
             "/sys/class/net/eth0/statistics/tx_bytes": "1024",
+            "/sys/class/net/eth0/statistics/rx_errors": "7",
+            "/sys/class/net/eth0/statistics/rx_dropped": "3",
         }.get(path, default),
     )
     monkeypatch.setattr(sys_monitor, "_run", lambda cmd, timeout=5: "192.168.1.50" if "eth0" in cmd else "")
@@ -172,6 +174,9 @@ def test_get_network_reports_interfaces(monkeypatch, tmp_path):
     assert result["interfaces"][0]["ip"] == "192.168.1.50"
     assert result["interfaces"][0]["rx_bytes"] == 2048
     assert "eth0" in result["rates"]
+    assert result["interfaces"][0]["rx_errors"] == 7
+    assert result["interfaces"][0]["rx_dropped"] == 3
+    assert result["interfaces"][0]["tx_errors"] == 0
 
 
 # ── get_top_processes ────────────────────────────────────────────────────

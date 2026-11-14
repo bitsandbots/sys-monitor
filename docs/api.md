@@ -153,7 +153,11 @@ Per-interface stats with throughput rates.
       "rx_bytes": 1048576000,
       "tx_bytes": 524288000,
       "rx_mb": 1000.0,
-      "tx_mb": 500.0
+      "tx_mb": 500.0,
+      "rx_errors": 0,
+      "tx_errors": 0,
+      "rx_dropped": 0,
+      "tx_dropped": 0
     }
   ],
   "rates": {
@@ -162,7 +166,35 @@ Per-interface stats with throughput rates.
 }
 ```
 
-> `rates` values are bytes/sec since the previous call.
+> `rates` values are bytes/sec since the previous call. The `*_errors` / `*_dropped` fields are cumulative kernel counters from `/sys/class/net/<if>/statistics/`.
+
+---
+
+### Disk I/O
+
+#### `GET /api/diskio`
+Per-disk throughput since the previous call (first call reports zeros). Partitions, loop, ram, zram and device-mapper devices are omitted.
+
+```json
+{"disks": {"nvme0n1": {"read_bps": 0, "write_bps": 4092, "read_iops": 0.0, "write_iops": 1.0, "busy_percent": 0.3}}}
+```
+
+---
+
+### GPU
+
+#### `GET /api/gpu`
+NVIDIA GPU stats via `nvidia-smi`. When it is missing or fails: `{"available": false, "gpus": [], "processes": []}` (the dashboard hides the GPU card). Fields that report `[N/A]` are `null`.
+
+```json
+{
+  "available": true,
+  "gpus": [{"index": 0, "name": "NVIDIA GeForce RTX 5070", "util_percent": 12.0,
+            "mem_used_mb": 6978.0, "mem_total_mb": 12227.0, "mem_percent": 57.1,
+            "temp_c": 30.0, "power_w": 5.2, "power_limit_w": 250.0}],
+  "processes": [{"pid": 3735779, "name": "/usr/local/lib/ollama/llama-server", "mem_used_mb": 6936.0}]
+}
+```
 
 ---
 

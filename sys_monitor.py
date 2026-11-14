@@ -743,6 +743,10 @@ def get_network() -> dict:
             tx_rate = max(0, round((tx - prev["tx"]) / elapsed)) if elapsed > 0 else 0
             _net_prev[name] = {"rx": rx, "tx": tx}
 
+            def _stat(key: str, _n: str = name) -> int:
+                raw = _read_file(f"/sys/class/net/{_n}/statistics/{key}", "0")
+                return int(raw) if raw.isdigit() else 0
+
             interfaces.append(
                 {
                     "name": name,
@@ -753,11 +757,154 @@ def get_network() -> dict:
                     "tx_bytes": tx,
                     "rx_mb": round(rx / (1024 * 1024), 2),
                     "tx_mb": round(tx / (1024 * 1024), 2),
+                    "rx_errors": _stat("rx_errors"),
+                    "tx_errors": _stat("tx_errors"),
+                    "rx_dropped": _stat("rx_dropped"),
+                    "tx_dropped": _stat("tx_dropped"),
                 }
             )
             rates[name] = {"rx_rate": rx_rate, "tx_rate": tx_rate}
 
     return {"interfaces": interfaces, "rates": rates}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Disk I/O — Rate Tracking (/proc/diskstats)
+# ═══════════════════════════════════════════════════════════════════════════
+_SECTOR_BYTES = 512  # /proc/diskstats always counts 512-byte sectors
+_DISK_SKIP = re.compile(r"^(loop|ram|zram|dm-|sr|fd)\d*")
+_DISK_PART = re.compile(r"^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+)\d+$|^(nvme\d+n\d+|mmcblk\d+)p\d+$")
+_disk_lock = threading.Lock()
+_disk_prev: dict = {}
+_disk_prev_time = 0.0
+
+
+def _parse_diskstats(text: str) -> dict:
+    """Parse /proc/diskstats into whole-disk cumulative counters.
+
+    Args:
+        text: Raw contents of /proc/diskstats.
+
+    Returns:
+        Mapping of device name to read/write sector, op and io-time counters.
+        Partitions, loop, ram, zram and device-mapper devices are skipped.
+    """
+    disks = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 14:
+            continue
+        name = f[2]
+        if _DISK_SKIP.match(name) or _DISK_PART.match(name):
+            continue
+        try:
+            disks[name] = {
+                "reads": int(f[3]),
+                "read_sectors": int(f[5]),
+                "writes": int(f[7]),
+                "write_sectors": int(f[9]),
+                "io_ms": int(f[12]),
+            }
+        except ValueError:
+            continue
+    return disks
+
+
+def get_disk_io() -> dict:
+    """Per-disk throughput (bytes/s), IOPS and busy % since the last call.
+
+    Returns:
+        {"disks": {name: {read_bps, write_bps, read_iops, write_iops,
+        busy_percent}}}. The first call after startup reports zero rates.
+    """
+    global _disk_prev_time
+    now = time.time()
+    current = _parse_diskstats(_read_file("/proc/diskstats"))
+    out = {}
+    with _disk_lock:
+        elapsed = now - _disk_prev_time if _disk_prev_time > 0 else 0.0
+        _disk_prev_time = now
+        for name, c in current.items():
+            prev = _disk_prev.get(name)
+            if prev is None or elapsed <= 0:
+                rates = dict(read_bps=0, write_bps=0, read_iops=0, write_iops=0, busy_percent=0.0)
+            else:
+                d = {k: max(0, c[k] - prev[k]) for k in c}
+                rates = {
+                    "read_bps": round(d["read_sectors"] * _SECTOR_BYTES / elapsed),
+                    "write_bps": round(d["write_sectors"] * _SECTOR_BYTES / elapsed),
+                    "read_iops": round(d["reads"] / elapsed, 1),
+                    "write_iops": round(d["writes"] / elapsed, 1),
+                    "busy_percent": min(100.0, round(d["io_ms"] / (elapsed * 10), 1)),
+                }
+            out[name] = rates
+        _disk_prev.clear()
+        _disk_prev.update(current)
+    return {"disks": out}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GPU — NVIDIA via nvidia-smi
+# ═══════════════════════════════════════════════════════════════════════════
+_GPU_QUERY = (
+    "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,"
+    "temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits"
+)
+_GPU_APPS_QUERY = (
+    "nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory "
+    "--format=csv,noheader,nounits"
+)
+
+
+def _num(val: str):
+    """Parse an nvidia-smi numeric field; '[N/A]' and junk become None."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_gpu() -> dict:
+    """NVIDIA GPU utilisation, VRAM, temperature, power and VRAM consumers.
+
+    Returns:
+        {"available": bool, "gpus": [...], "processes": [...]}. When
+        nvidia-smi is missing or fails, available is False and lists are
+        empty (graceful degrade, same as power_status on non-Pi hosts).
+    """
+    raw = _run(_GPU_QUERY, timeout=4)
+    gpus = []
+    for line in raw.splitlines():
+        f = [x.strip() for x in line.split(",")]
+        if len(f) < 8:
+            continue
+        used, total = _num(f[3]), _num(f[4])
+        gpus.append(
+            {
+                "index": int(f[0]) if f[0].isdigit() else len(gpus),
+                "name": f[1],
+                "util_percent": _num(f[2]),
+                "mem_used_mb": used,
+                "mem_total_mb": total,
+                "mem_percent": round(used / total * 100, 1) if used is not None and total else None,
+                "temp_c": _num(f[5]),
+                "power_w": _num(f[6]),
+                "power_limit_w": _num(f[7]),
+            }
+        )
+    if not gpus:
+        return {"available": False, "gpus": [], "processes": []}
+
+    procs = []
+    for line in _run(_GPU_APPS_QUERY, timeout=4).splitlines():
+        f = [x.strip() for x in line.split(",")]
+        if len(f) < 4 or not f[1].isdigit():
+            continue
+        procs.append(
+            {"pid": int(f[1]), "name": ",".join(f[2:-1]), "mem_used_mb": _num(f[-1])}
+        )
+    procs.sort(key=lambda p: p["mem_used_mb"] or 0, reverse=True)
+    return {"available": True, "gpus": gpus, "processes": procs}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1685,6 +1832,18 @@ def api_storage():
 @require_auth
 def api_network():
     return jsonify(get_network())
+
+
+@app.route("/api/diskio")
+@require_auth
+def api_diskio():
+    return jsonify(get_disk_io())
+
+
+@app.route("/api/gpu")
+@require_auth
+def api_gpu():
+    return jsonify(get_gpu())
 
 
 @app.route("/api/processes")

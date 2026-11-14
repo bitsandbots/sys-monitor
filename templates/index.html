@@ -519,6 +519,12 @@ body {
         <div style="display:flex;justify-content:space-around" id="net-quick"></div>
       </div>
 
+      <!-- GPU card — only shown when nvidia-smi reports a GPU -->
+      <div class="card" id="gpu-card" style="--accent-color:var(--green);display:none">
+        <div class="card-hdr">🎮 GPU <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="gpu-count"></span></div>
+        <div id="gpu-body"></div>
+      </div>
+
       <!-- LLM Models card — only shown when a local model server is detected serving something -->
       <div class="card" id="llm-card" style="--accent-color:var(--purple);display:none">
         <div class="card-hdr">🧠 LLM Models <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="llm-count"></span></div>
@@ -1106,6 +1112,32 @@ async function pollHealthStatus() {
   if (health) checkHealthAlert(health);
 }
 
+// ── GPU Polling (nvidia-smi; card hidden when unavailable) ──
+async function refreshGPU() {
+  const g = await api('gpu');
+  const card = $('gpu-card');
+  if (!g || !g.available) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  $('gpu-count').textContent = g.gpus.length > 1 ? g.gpus.length + ' GPUS' : '';
+  const pct = v => (v == null ? '—' : Math.round(v) + '%');
+  $('gpu-body').innerHTML = g.gpus.map(x => {
+    const mem = x.mem_percent == null ? 0 : x.mem_percent;
+    const procs = g.processes.slice(0, 4).map(p =>
+      `<span class="llm-chip">${esc(p.name.split('/').pop())} · ${Math.round(p.mem_used_mb || 0)} MB</span>`).join(' ');
+    return `<div class="llm-row">
+      <span class="llm-row-label">${esc(x.name)}</span>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+        Util ${pct(x.util_percent)} · VRAM ${Math.round(x.mem_used_mb || 0)}/${Math.round(x.mem_total_mb || 0)} MB (${pct(x.mem_percent)})
+        · ${x.temp_c == null ? '—' : Math.round(x.temp_c) + '°C'}
+        · ${x.power_w == null ? '—' : Math.round(x.power_w) + 'W'}
+      </div>
+      <div style="height:6px;background:var(--border);border-radius:3px;margin-top:6px;overflow:hidden">
+        <div style="height:100%;width:${mem}%;background:var(--accent-color,var(--green))"></div></div>
+      <div class="llm-chips">${procs}</div>
+    </div>`;
+  }).join('');
+}
+
 // ── LLM Service Polling (separate endpoint, less frequent — involves
 //    live HTTP probes to each candidate port) ──
 async function refreshLLM() {
@@ -1523,6 +1555,8 @@ async function init() {
   // LLM probes make live HTTP calls to each candidate port, so poll less
   // frequently than the main status/tab refreshes.
   setInterval(refreshLLM, Math.max(REFRESH * 4, 8000));
+  refreshGPU();
+  setInterval(refreshGPU, Math.max(REFRESH * 2, 4000));
   // Security scoring runs `ss` + connection scoring every cycle — same
   // cadence as LLM detection is a good balance of freshness vs. overhead.
   setInterval(refreshSecurity, Math.max(REFRESH * 4, 8000));
