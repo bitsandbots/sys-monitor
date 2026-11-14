@@ -546,6 +546,12 @@ body {
         <div id="gpu-body"></div>
       </div>
 
+      <!-- Threats card — only shown when log-driven threat detection is enabled -->
+      <div class="card" id="threat-card" style="--accent-color:var(--orange,#e07018);display:none">
+        <div class="card-hdr">🛡️ Threats <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="threat-count"></span></div>
+        <div id="threat-body"></div>
+      </div>
+
       <!-- LLM Models card — only shown when a local model server is detected serving something -->
       <div class="card" id="llm-card" style="--accent-color:var(--purple);display:none">
         <div class="card-hdr">🧠 LLM Models <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="llm-count"></span></div>
@@ -1208,6 +1214,27 @@ async function refreshGPU() {
   }).join('');
 }
 
+// ── Threat detection (hidden when disabled) ──
+async function refreshThreats() {
+  const t = await api('threats?range=24h&severity=warning&limit=8');
+  const card = $('threat-card');
+  if (!t || !t.enabled) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const st = t.status || {};
+  const sevColor = { critical: 'var(--red)', warning: 'var(--yellow, #eab308)', info: 'var(--text-muted)' };
+  const learn = st.learning
+    ? `<div class="llm-row"><span class="llm-chip">learning baseline until ${esc(new Date(st.learning_ends * 1000).toLocaleDateString())}</span></div>` : '';
+  const problems = (st.problems || []).map(p =>
+    `<div class="llm-row" style="color:var(--red);font-size:11px">⚠ ${esc(p)}</div>`).join('');
+  $('threat-count').textContent = t.findings.length ? t.findings.length + ' IN 24H' : 'ALL QUIET';
+  const rows = t.findings.map(f => `<div class="llm-row">
+      <span class="llm-row-label" style="color:${sevColor[f.severity] || 'inherit'}">${esc(f.detector.replace(/_/g, ' '))}</span>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(f.message)}</div>
+      <div style="font-size:10px;color:var(--text-muted)">${esc(new Date(f.ts * 1000).toLocaleString())}</div>
+    </div>`).join('');
+  $('threat-body').innerHTML = problems + learn + rows;
+}
+
 // ── LLM Service Polling (separate endpoint, less frequent — involves
 //    live HTTP probes to each candidate port) ──
 async function refreshLLM() {
@@ -1627,6 +1654,8 @@ async function init() {
   setInterval(refreshLLM, Math.max(REFRESH * 4, 8000));
   refreshGPU();
   setInterval(refreshGPU, Math.max(REFRESH * 2, 4000));
+  refreshThreats();
+  setInterval(refreshThreats, 15000);
   refreshContainers();
   setInterval(refreshContainers, 15000);
   refreshHistory(true);

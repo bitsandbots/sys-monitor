@@ -814,3 +814,11 @@ If a node is unreachable, proxy routes return `502` with `{"error": "unreachable
 | `404` | Not found — service or node doesn't exist |
 | `409` | Conflict — duplicate service name |
 | `502` | Bad gateway — hub cannot reach the node |
+
+
+## `GET /api/threats`
+
+Log-driven threat findings (see `docs/threat-detection.md`). Query:
+`range` (1h, 6h, 24h, 7d, 30d; default 24h), `ip`, `severity`
+(info|warning|critical), `limit` (max 1000). Returns `{"enabled": false}` when
+no history DB is configured. Requires auth like other endpoints.

@@ -36,6 +36,14 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, abort
 
+try:
+    import threat_detect as _td
+
+    THREAT_AVAILABLE = True
+except ImportError:  # pragma: no cover — optional companion file
+    _td = None
+    THREAT_AVAILABLE = False
+
 app = Flask(__name__)
 
 VERSION = "2.5.1"
@@ -85,6 +93,20 @@ CONFIG = {
     "docker_sockets": [
         x.strip() for x in os.getenv("SYSMONITOR_DOCKER_SOCKETS", "").split(",") if x.strip()
     ],
+    "alert_ntfy_token": os.getenv("SYSMONITOR_ALERT_NTFY_TOKEN", ""),
+    # Log-driven threat detection (needs the history DB for storage).
+    "threat_enabled": os.getenv("SYSMONITOR_THREAT", "true").lower() == "true",
+    "threat_interval": float(os.getenv("SYSMONITOR_THREAT_INTERVAL", "10")),
+    "threat_learning_days": float(os.getenv("SYSMONITOR_THREAT_LEARNING_DAYS", "7")),
+    "threat_retention_days": float(os.getenv("SYSMONITOR_THREAT_RETENTION_DAYS", "30")),
+    "threat_notify_per_hour": int(os.getenv("SYSMONITOR_THREAT_NOTIFY_PER_HOUR", "20")),
+    "threat_access_logs": [
+        x.strip()
+        for x in os.getenv("SYSMONITOR_ACCESS_LOGS", "/var/log/nginx/access.log").split(",")
+        if x.strip()
+    ],
+    # Extra IPs/CIDRs that must never be flagged blockable (LAN is implicit).
+    "threat_allowlist": os.getenv("SYSMONITOR_THREAT_ALLOWLIST", ""),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -266,6 +288,7 @@ def _auth_locked_out(ip: str) -> bool:
 def _auth_record_failure(ip: str) -> None:
     with _auth_lock:
         _auth_failures[ip].append(time.time())
+    _threat_push_login_fail(ip)
 
 
 def require_auth(f):
@@ -1985,6 +2008,11 @@ def _send_alert(event: str, rule: str, severity: str, message: str) -> None:
                 ntfy,
                 data=message.encode(),
                 headers={
+                    **(
+                        {"Authorization": f"Bearer {CONFIG['alert_ntfy_token']}"}
+                        if CONFIG["alert_ntfy_token"]
+                        else {}
+                    ),
                     # HTTP headers must be latin-1; keep the title ASCII-safe.
                     "Title": f"{host}: {'recovered' if recovered else severity}".encode(
                         "ascii", "replace"
@@ -2192,6 +2220,211 @@ def start_history() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Threat Detection (log-driven; see threat_detect.py)
+# ═══════════════════════════════════════════════════════════════════════════
+_THREAT_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
+_threat_lock = threading.Lock()
+_threat_engine = None
+_threat_tailers: dict = {}
+_threat_feed: deque = deque(maxlen=5000)  # events pushed by in-process hooks
+_threat_notified: deque = deque()  # timestamps of recent notifications
+_threat_state: dict = {
+    "started": False,
+    "learning": True,
+    "learning_ends": 0.0,
+    "last_poll": 0.0,
+    "events_seen": 0,
+    "suppressed": 0,
+    "problems": [],
+}
+
+
+def _threat_enabled() -> bool:
+    return bool(THREAT_AVAILABLE and CONFIG["threat_enabled"] and CONFIG["history_db"])
+
+
+def _threat_push_login_fail(ip: str) -> None:
+    """Feed a dashboard/API auth failure into the detector (non-blocking)."""
+    if not _threat_enabled():
+        return
+    norm = _td.normalize_ip(ip or "")
+    if norm:
+        _threat_feed.append(
+            _td.LogEvent(
+                ts=time.time(), source="sysmon", kind="login_fail", ip=norm, user="(api)"
+            )
+        )
+
+
+def _threat_init() -> None:
+    """Create the engine: load baseline, resolve learning window, backfill ssh."""
+    global _threat_engine
+    conn = _td.open_db(CONFIG["history_db"])
+    try:
+        learning, ends = _td.learning_state(conn, CONFIG["threat_learning_days"])
+        baseline = _td.load_baseline(conn)
+    finally:
+        conn.close()
+    engine = _td.ThreatEngine(
+        baseline=baseline,
+        allowlist=_td.parse_networks(CONFIG["threat_allowlist"]),
+        learning=learning,
+    )
+    state_dir = _td.resolve_state_dir(CONFIG["history_db"])
+    cursor = state_dir / "sshd.cursor"
+    problems: list = []
+    # First run (no cursor): seed the baseline from 30 days of history.
+    for ev in _td.read_journal_sshd(
+        str(cursor), backfill=not cursor.exists(), errors=problems
+    ):
+        engine.ingest(ev, seed=True)
+    conn = _td.open_db(CONFIG["history_db"])
+    try:
+        _td.save_baseline(conn, engine.baseline)
+    finally:
+        conn.close()
+    _threat_tailers.clear()
+    for path in CONFIG["threat_access_logs"]:
+        _threat_tailers[path] = _td.FileTailer(path)
+    with _threat_lock:
+        _threat_engine = engine
+        _threat_state.update(
+            started=True,
+            learning=learning,
+            learning_ends=ends,
+            problems=problems,
+        )
+
+
+def _threat_collect_events() -> list:
+    """Gather new events from every source, oldest first."""
+    events: list = []
+    problems: list = []
+    cursor = _td.resolve_state_dir(CONFIG["history_db"]) / "sshd.cursor"
+    events += _td.read_journal_sshd(str(cursor), errors=problems)
+    for path, tailer in _threat_tailers.items():
+        for line in tailer.read_new():
+            ev = _td.parse_access_line(line, source=Path(path).parent.name or "web")
+            if ev:
+                events.append(ev)
+    while _threat_feed:
+        events.append(_threat_feed.popleft())
+    events.sort(key=lambda e: e.ts)
+    with _threat_lock:
+        _threat_state["problems"] = problems
+    return events
+
+
+def _threat_notify(f) -> None:
+    """Send a warning/critical finding, capped per hour to avoid floods."""
+    if f.severity == "info":
+        return
+    now = time.time()
+    with _threat_lock:
+        while _threat_notified and now - _threat_notified[0] > 3600:
+            _threat_notified.popleft()
+        if len(_threat_notified) >= CONFIG["threat_notify_per_hour"]:
+            _threat_state["suppressed"] += 1
+            return
+        _threat_notified.append(now)
+    _send_alert("threat", f"threat:{f.detector}:{f.ip or f.user}", f.severity, f.message)
+
+
+def _threat_poll_once() -> list:
+    """One detection cycle. Returns the findings produced."""
+    if _threat_engine is None:
+        return []
+    events = _threat_collect_events()
+    findings: list = []
+    with _threat_lock:
+        for ev in events:
+            findings += _threat_engine.ingest(ev)
+        _threat_state["events_seen"] += len(events)
+        _threat_state["last_poll"] = time.time()
+        if _threat_state["learning"] and time.time() >= _threat_state["learning_ends"]:
+            _threat_state["learning"] = False
+            _threat_engine.learning = False
+            logins_changed = True
+        else:
+            logins_changed = False
+    if events or findings or logins_changed:
+        conn = _td.open_db(CONFIG["history_db"])
+        try:
+            for f in findings:
+                _td.record_finding(conn, f)
+            if any(e.kind == "login_ok" for e in events):
+                _td.save_baseline(conn, _threat_engine.baseline)
+        finally:
+            conn.close()
+    for f in findings:
+        log_event(
+            f"THREAT [{f.severity}] {f.message}",
+            "error" if f.severity == "critical" else "warning",
+        )
+        _threat_notify(f)
+    return findings
+
+
+def _threat_loop() -> None:
+    """Background poller; prunes old findings hourly."""
+    last_prune = 0.0
+    while True:
+        try:
+            _threat_poll_once()
+            if time.time() - last_prune > 3600:
+                conn = _td.open_db(CONFIG["history_db"])
+                try:
+                    _td.prune_findings(conn, CONFIG["threat_retention_days"])
+                finally:
+                    conn.close()
+                last_prune = time.time()
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            log_event(f"Threat detector error: {exc}", "warning")
+        time.sleep(max(2.0, CONFIG["threat_interval"]))
+
+
+def start_threat_detection() -> bool:
+    """Start the detector thread if enabled and storage is available."""
+    if not _threat_enabled() or CONFIG["threat_interval"] <= 0:
+        return False
+    try:
+        _threat_init()
+    except (sqlite3.Error, OSError) as exc:
+        log_event(f"Threat detection disabled — init failed: {exc}", "warning")
+        return False
+    _spawn("threat-detector", _threat_loop)
+    return True
+
+
+def get_threats(range_key: str = "24h", ip: str = "", min_severity: str = "info", limit: int = 200) -> dict:
+    """Findings, top offenders and engine status for the dashboard/API.
+
+    Raises:
+        ValueError: If range_key or min_severity is not recognised.
+    """
+    if range_key not in _THREAT_RANGES:
+        raise ValueError(f"range must be one of {sorted(_THREAT_RANGES)}")
+    if min_severity not in ("info", "warning", "critical"):
+        raise ValueError("severity must be info, warning or critical")
+    since = time.time() - _THREAT_RANGES[range_key]
+    conn = _td.open_db(CONFIG["history_db"])
+    try:
+        findings = _td.query_findings(conn, since, ip, min_severity, limit)
+        top = _td.top_offenders(conn, since)
+    finally:
+        conn.close()
+    with _threat_lock:
+        status = {k: _threat_state[k] for k in _threat_state}
+    return {
+        "enabled": True,
+        "status": status,
+        "range": range_key,
+        "findings": findings,
+        "top_offenders": top,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 @app.route("/")
@@ -2277,6 +2510,26 @@ def api_alerts():
             "history": history,
         }
     )
+
+
+@app.route("/api/threats")
+@require_auth
+def api_threats():
+    """Threat findings: ?range=1h|6h|24h|7d|30d&ip=&severity=&limit=."""
+    if not _threat_enabled():
+        return jsonify({"enabled": False, "findings": [], "top_offenders": []})
+    try:
+        limit = int(request.args.get("limit", "200"))
+        return jsonify(
+            get_threats(
+                request.args.get("range", "24h"),
+                request.args.get("ip", ""),
+                request.args.get("severity", "info"),
+                limit,
+            )
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.route("/api/history")
@@ -2701,6 +2954,11 @@ if __name__ == "__main__":
         log_event(f"Metrics history: {CONFIG['history_db']} every {CONFIG['history_interval']:g}s, keep {CONFIG['history_days']:g}d")
     if start_alerting():
         log_event(f"Outbound alerting: every {CONFIG['alert_interval']:g}s")
+    if start_threat_detection():
+        log_event(
+            f"Threat detection: every {CONFIG['threat_interval']:g}s, "
+            f"learning {'ON' if _threat_state['learning'] else 'done'}"
+        )
     log_event(f"Listening on http://{CONFIG['host']}:{CONFIG['port']}")
     log_event("SysMonitor ready.", "success")
 
