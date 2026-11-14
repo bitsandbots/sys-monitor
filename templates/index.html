@@ -519,6 +519,12 @@ body {
         <div style="display:flex;justify-content:space-around" id="net-quick"></div>
       </div>
 
+      <!-- Containers card — only shown when SYSMONITOR_DOCKER_SOCKETS is set -->
+      <div class="card" id="containers-card" style="--accent-color:var(--cyan);display:none">
+        <div class="card-hdr">🐳 Containers <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="containers-count"></span></div>
+        <div id="containers-body"></div>
+      </div>
+
       <!-- History card — only shown when the node records metrics history -->
       <div class="card" id="history-card" style="--accent-color:var(--blue);display:none">
         <div class="card-hdr">📈 History
@@ -1127,6 +1133,31 @@ async function pollHealthStatus() {
   if (health) checkHealthAlert(health);
 }
 
+// ── Containers (read-only Docker view; card hidden when disabled) ──
+async function refreshContainers() {
+  const c = await api('containers');
+  const card = $('containers-card');
+  if (!c || !c.enabled) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  let running = 0, total = 0;
+  $('containers-body').innerHTML = c.daemons.map(d => {
+    if (!d.available) {
+      return `<div class="llm-row"><span class="llm-row-label">${esc(d.socket)}</span>
+        <div style="font-size:11px;color:var(--red)">${esc(d.error || 'unavailable')}</div></div>`;
+    }
+    total += d.containers.length;
+    const rows = d.containers.map(x => {
+      if (x.state === 'running') running++;
+      const bad = x.health === 'unhealthy' || x.state === 'restarting';
+      const color = bad ? 'var(--red)' : (x.state === 'running' ? 'var(--green)' : 'var(--text-muted)');
+      return `<div style="font-size:11px;padding:2px 0"><span style="color:${color}">●</span>
+        ${esc(x.name)} <span style="color:var(--text-muted)">${esc(x.status)}</span></div>`;
+    }).join('');
+    return `<div class="llm-row"><span class="llm-row-label">${esc(d.socket)}</span>${rows}</div>`;
+  }).join('');
+  $('containers-count').textContent = `${running}/${total} RUNNING`;
+}
+
 // ── Metrics History (SQLite-backed; card hidden when disabled) ──
 async function refreshHistory(reload) {
   const sel = $('history-metric');
@@ -1596,6 +1627,8 @@ async function init() {
   setInterval(refreshLLM, Math.max(REFRESH * 4, 8000));
   refreshGPU();
   setInterval(refreshGPU, Math.max(REFRESH * 2, 4000));
+  refreshContainers();
+  setInterval(refreshContainers, 15000);
   refreshHistory(true);
   setInterval(() => refreshHistory(true), 60000);
   // Security scoring runs `ss` + connection scoring every cycle — same
