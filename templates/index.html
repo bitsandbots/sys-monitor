@@ -1242,7 +1242,32 @@ async function refreshThreats() {
         `<span style="color:var(--text-muted)">until ${esc(new Date(x.expires * 1000).toLocaleString())} · ${esc(x.detector || x.source)}</span> ` +
         `<a href="#" data-unblock="${esc(x.ip)}">unblock</a></div>`).join('') + '</div>';
   }
-  $('threat-body').innerHTML = problems + learn + blocks + rows;
+  const q = await api('quarantine');
+  let quar = '';
+  if (q && q.available) {
+    quar = q.active
+      ? `<div class="llm-row" style="color:var(--red)"><span class="llm-row-label">⛔ Internet quarantine ACTIVE</span> ` +
+        `<span style="font-size:11px">${Math.ceil((q.remaining || 0) / 60)} min left</span> <a href="#" id="q-release">release now</a></div>`
+      : `<div class="llm-row"><a href="#" id="q-start" style="font-size:11px">Quarantine internet…</a> ` +
+        `<span style="font-size:10px;color:var(--text-muted)">cuts outbound access, keeps LAN + SSH, auto-reverts</span></div>`;
+  }
+  $('threat-body').innerHTML = problems + learn + quar + blocks + rows;
+  const qs = $('q-start'), qr = $('q-release');
+  if (qs) qs.addEventListener('click', async ev => {
+    ev.preventDefault();
+    const mins = prompt('Cut this host\'s outbound internet for how many minutes (1-60)? LAN and SSH stay up and it auto-reverts.', '15');
+    if (!mins) return;
+    if (prompt('Type QUARANTINE to confirm') !== 'QUARANTINE') return;
+    const r = await fetch('/api/quarantine', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'QUARANTINE', minutes: parseInt(mins, 10) }) });
+    if (!r.ok) alert('Quarantine failed: ' + ((await r.json().catch(() => ({}))).error || r.statusText));
+    refreshThreats();
+  });
+  if (qr) qr.addEventListener('click', async ev => {
+    ev.preventDefault();
+    await fetch('/api/quarantine', { method: 'DELETE' });
+    refreshThreats();
+  });
   $('threat-body').querySelectorAll('[data-unblock]').forEach(a => a.addEventListener('click', async ev => {
     ev.preventDefault();
     const ip = a.getAttribute('data-unblock');

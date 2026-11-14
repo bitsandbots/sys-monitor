@@ -162,3 +162,62 @@ def test_approve_is_post_only(blk, node_client):
         node_client.get(f"/api/blocks/approve?ip={PUB}&exp={exp}&sig={sig}").status_code
         == 405
     )
+
+
+# ── quarantine ─────────────────────────────────────────────────────────────
+
+
+def test_quarantine_requires_typed_confirmation(blk, node_client):
+    assert node_client.post("/api/quarantine", json={"minutes": 5}).status_code == 400
+    assert (
+        node_client.post("/api/quarantine", json={"confirm": "yes"}).status_code == 400
+    )
+    assert blk.fake.calls == []
+
+
+def test_quarantine_start_status_release(blk, node_client):
+    r = node_client.post(
+        "/api/quarantine", json={"confirm": "QUARANTINE", "minutes": 5}
+    )
+    assert r.status_code == 200 and r.get_json()["minutes"] == 5
+    assert ["quarantine", "on", "300"] in blk.fake.calls
+    assert blk.sent[-1][0][0] == "quarantine"  # alert fired first
+    assert node_client.get("/api/quarantine").get_json()["available"] is True
+    assert node_client.delete("/api/quarantine").get_json()["active"] is False
+    assert ["quarantine", "off"] in blk.fake.calls
+
+
+@pytest.mark.parametrize("minutes", [0, 61, -3, "abc"])
+def test_quarantine_bounds(blk, node_client, minutes):
+    body = {"confirm": "QUARANTINE", "minutes": minutes}
+    r = node_client.post("/api/quarantine", json=body)
+    # 0 means "use the default"; everything else out of range is rejected
+    if minutes == 0:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 400
+        assert ["quarantine", "on", "300"] not in blk.fake.calls
+
+
+def test_quarantine_honors_config_token(blk, node_client):
+    sys_monitor.CONFIG["config_token"] = "HARNESS_cfg"
+    r = node_client.post("/api/quarantine", json={"confirm": "QUARANTINE"})
+    assert r.status_code == 401 and blk.fake.calls == []
+
+
+def test_quarantine_has_no_automatic_caller(blk, monkeypatch):
+    """Detectors must never trigger quarantine, whatever the mode or finding."""
+    for mode in ("dry-run", "manual", "auto"):
+        sys_monitor._blocker.s.mode = mode
+        monkeypatch.setattr(sys_monitor, "_threat_collect_events", lambda: _fails(30))
+        sys_monitor._threat_poll_once()
+    assert not any(c[0] == "quarantine" and c[1] == "on" for c in blk.fake.calls)
+
+
+def test_quarantine_status_when_helper_missing(blk, node_client):
+    def boom(*a, **k):
+        raise FileNotFoundError("sudo")
+
+    sys_monitor._blocker._run = boom
+    data = node_client.get("/api/quarantine").get_json()
+    assert data["available"] is False and data["active"] is False

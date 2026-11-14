@@ -143,3 +143,37 @@ reboot from `/var/lib/sysmon-block/state.json`.
 
 Mutations honor `SYSMONITOR_TOKEN` and, if set, `SYSMONITOR_CONFIG_TOKEN`
 (`X-Config-Token`).
+
+## Outbound quarantine (manual only)
+
+For a suspected compromise (C2 beacon, exfiltration), the operator can cut this
+host's outbound internet access. **No detector can trigger it** — there is no
+automatic code path, by design: this host serves Gitea, Nextcloud and CI, so a
+false positive would cause real outages.
+
+What it does: a second nft table `inet sysmon_q` drops everything leaving the
+host (`output`) or routed for containers (`forward`) **except** loopback,
+private/LAN/link-local/multicast destinations and SSH replies (tcp sport 22/2222).
+Docker container egress is covered. Local ntfy on `127.0.0.1` keeps working.
+
+Safety:
+
+- **Bounded:** 1–60 minutes (default 15); a typed `QUARANTINE` confirmation is required.
+- **Fail-closed:** the helper arms a root-owned transient systemd timer
+  (`sysmon-quarantine-revert`) *before* touching the firewall and refuses to
+  engage if it can't. The revert therefore fires even if sys-monitor is down.
+- **Reboot clears it:** the table is not persistent and `init` never restores it.
+- A critical alert is sent first (a remote webhook won't deliver once engaged;
+  local ntfy will).
+- Release any time: dashboard link, `DELETE /api/quarantine`, or
+  `sudo sysmon-block quarantine off`.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/quarantine` | `{available, active, until, remaining}` |
+| `POST /api/quarantine` | `{confirm: "QUARANTINE", minutes?}` |
+| `DELETE /api/quarantine` | release |
+
+Note: on a host with `SYSMONITOR_LAN_NO_AUTH=true` any LAN client can call these
+mutations, as with service control. Set `SYSMONITOR_CONFIG_TOKEN` as a second gate
+if that matters (API callers send it as `X-Config-Token`; the dashboard UI does not).
