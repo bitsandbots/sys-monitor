@@ -24,7 +24,7 @@ def threat(monkeypatch, tmp_path):
         threat_allowlist="",
     )
     sent = []
-    monkeypatch.setattr(sys_monitor, "_send_alert", lambda *a: sent.append(a))
+    monkeypatch.setattr(sys_monitor, "_send_alert", lambda *a, **k: sent.append(a))
     monkeypatch.setattr(sys_monitor._td, "read_journal_sshd", lambda *a, **k: [])
     sys_monitor._threat_feed.clear()
     sys_monitor._threat_notified.clear()

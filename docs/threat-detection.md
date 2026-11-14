@@ -1,7 +1,7 @@
 # Threat Detection
 
-Log-driven detection of remote-login abuse and bot-like traffic. Detect-only:
-nothing here blocks traffic (see the blocker section once enabled).
+Log-driven detection of remote-login abuse and bot-like traffic, plus an
+optional, staged IP blocker (off by default; see *IP blocker* below).
 
 Implemented in `threat_detect.py` (stdlib only, pure detectors) and wired into
 `sys_monitor.py` as the `threat-detector` background thread.
@@ -71,3 +71,75 @@ counted as `suppressed` in `/api/threats`. `info` findings are stored only.
 Returns `{enabled, status{learning, learning_ends, last_poll, events_seen,
 suppressed, problems[]}, findings[], top_offenders[]}`. `status.problems`
 reports unreadable sources (e.g. missing journal access).
+
+## IP blocker
+
+Blocks **inbound traffic from offending public IPs**. Enforcement is a
+dedicated nftables table `inet sysmon` (sets with per-element expiry, hooked at
+prerouting so Docker-published ports are covered; independent of ufw). The
+Flask process never touches nftables: it calls the root helper
+`/usr/local/sbin/sysmon-block` through a narrow sudoers rule.
+
+### Modes (`SYSMONITOR_BLOCK_MODE`)
+
+| Mode | Behaviour |
+|------|-----------|
+| `off` (default) | nothing recorded or enforced |
+| `dry-run` | records "would block" decisions (visible in `/api/blocks` and the dashboard), enforces nothing |
+| `manual` | blocks only on operator action: `POST /api/blocks`, or the signed one-tap **Block** button on the ntfy notification |
+| `auto` | also blocks `brute_force`, `password_spray` and `web_scan` findings with score ≥ 60 |
+
+Recommended rollout: `dry-run` for about a week, review the would-block list,
+then `manual`, then `auto` only once the false-positive record is clean.
+
+### Guardrails
+
+- Only globally-routable addresses are ever blockable. Loopback, LAN, link-local,
+  multicast, reserved and documentation ranges are refused by both the app
+  **and** the helper (independent validation).
+- `/etc/sys-monitor/block-allowlist` (helper) and `SYSMONITOR_THREAT_ALLOWLIST`
+  (app) add extra never-block addresses.
+- An IP that has ever logged in successfully is never auto-blocked (protects your
+  own remote address); only an explicit operator `force` overrides that.
+- Escalating TTLs per repeat offender: 1h, 24h, then 7d. Operator removals count as
+  false positives and do not escalate.
+- Caps: `SYSMONITOR_BLOCK_MAX_ACTIVE` (200) concurrent blocks and
+  `SYSMONITOR_BLOCK_MAX_PER_HOUR` (10) automatic blocks per hour.
+- Every decision is stored in the `ip_blocks` table (audit trail) and the event log.
+- Blocks expire on their own; `sysmon-block flush` / `POST /api/blocks/flush` clears
+  them all. Unblocking works in every mode.
+- Only established log evidence (completed sessions/requests) triggers blocks, never
+  SYN/UDP, so a spoofed source address cannot get a legitimate IP banned.
+
+### One-tap approval
+
+With `SYSMONITOR_PUBLIC_URL` set (e.g. `http://192.168.0.150:8585`), manual-mode
+ntfy notifications carry a **Block** button. Its URL is an HMAC-signed,
+single-IP, one-hour approval (`POST /api/blocks/approve`); no bearer token is
+embedded in the notification, GET requests are rejected (link prefetchers can't
+trigger it), and a signed link for a LAN address is still refused.
+
+### Install
+
+```bash
+sudo contrib/install-blocker.sh      # helper, sudoers (visudo-validated), unit drop-in, restore unit
+# then set SYSMONITOR_BLOCK_MODE=dry-run and restart sys-monitor
+```
+
+`contrib/sys-monitor-threats.conf` adds `SupplementaryGroups=systemd-journal adm`
+(journal + web-log access) and `ReadWritePaths=/var/lib/sysmon-block` (sudo inherits
+`ProtectSystem=strict`). `sysmon-block-restore.service` rebuilds the table after a
+reboot from `/var/lib/sysmon-block/state.json`.
+
+### API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/blocks` | mode, active blocks, recent decisions |
+| `POST /api/blocks` | `{ip, reason?, ttl?, force?}` operator block |
+| `DELETE /api/blocks/<ip>` | unblock |
+| `POST /api/blocks/flush` | unblock everything |
+| `POST /api/blocks/approve?ip=&exp=&sig=` | signed one-tap approval |
+
+Mutations honor `SYSMONITOR_TOKEN` and, if set, `SYSMONITOR_CONFIG_TOKEN`
+(`X-Config-Token`).
