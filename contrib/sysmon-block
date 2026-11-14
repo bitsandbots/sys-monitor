@@ -15,6 +15,9 @@ Usage:
     sysmon-block del <ip>             unblock one address
     sysmon-block list                 JSON list of active blocks
     sysmon-block flush                remove every block
+    sysmon-block quarantine on <secs> cut outbound internet (LAN + SSH kept), auto-reverts
+    sysmon-block quarantine off       restore internet now
+    sysmon-block quarantine status    JSON {active, until}
 
 Exit codes: 0 ok, 2 refused/invalid input, 3 nft failure.
 The nft table is `inet sysmon`, hooked at prerouting (priority -150) so it
@@ -50,6 +53,44 @@ RULESET = f"""table inet {TABLE} {{
         type filter hook prerouting priority -150; policy accept;
         ip saddr @blocklist4 counter drop
         ip6 saddr @blocklist6 counter drop
+    }}
+}}
+"""
+
+
+Q_TABLE = "sysmon_q"
+Q_MIN, Q_MAX = 60, 3600
+Q_UNIT = "sysmon-quarantine-revert"
+Q_STATE = Path(
+    os.environ.get("SYSMON_QUARANTINE_STATE", "/var/lib/sysmon-block/quarantine.json")
+)
+SELF = os.environ.get("SYSMON_BLOCK_SELF", "/usr/local/sbin/sysmon-block")
+
+# Quarantine drops everything leaving the host (output) or being routed for
+# containers (forward) except private/LAN/loopback destinations and SSH replies.
+Q_RULESET = f"""table inet {Q_TABLE} {{
+    set lan4 {{
+        type ipv4_addr; flags interval;
+        elements = {{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16,
+                     127.0.0.0/8, 224.0.0.0/4, 255.255.255.255 }}
+    }}
+    set lan6 {{
+        type ipv6_addr; flags interval;
+        elements = {{ fe80::/10, fc00::/7, ff00::/8, ::1 }}
+    }}
+    chain output {{
+        type filter hook output priority -10; policy accept;
+        oifname "lo" accept
+        ip daddr @lan4 accept
+        ip6 daddr @lan6 accept
+        tcp sport {{ 22, 2222 }} accept
+        counter drop
+    }}
+    chain forward {{
+        type filter hook forward priority -10; policy accept;
+        ip daddr @lan4 accept
+        ip6 daddr @lan6 accept
+        counter drop
     }}
 }}
 """
@@ -234,9 +275,106 @@ def cmd_flush(run=subprocess.run) -> dict:
     return {"ok": True}
 
 
+def _q_state_read(path: Path | None = None) -> float:
+    try:
+        return float(json.loads((path or Q_STATE).read_text())["until"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0.0
+
+
+def _q_state_write(until: float | None, path: Path | None = None) -> None:
+    path = path or Q_STATE
+    if until is None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(json.dumps({"until": until}))
+
+
+def cmd_quarantine_on(raw_secs: str, run=subprocess.run, now=time.time) -> dict:
+    """Engage quarantine. Fails closed: no auto-revert timer, no quarantine.
+
+    The revert is a root-owned transient systemd timer, so it fires even if
+    sys-monitor has crashed or the operator lost access. A reboot also clears
+    the (non-persistent) nft table.
+    """
+    try:
+        secs = int(raw_secs)
+    except (TypeError, ValueError) as exc:
+        raise Refused(f"duration must be integer seconds: {raw_secs!r}") from exc
+    if not Q_MIN <= secs <= Q_MAX:
+        raise Refused(f"duration must be between {Q_MIN} and {Q_MAX} seconds")
+    # Replace any previous timer, then arm the new one BEFORE touching the firewall.
+    run(
+        ["systemctl", "stop", f"{Q_UNIT}.timer"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    arm = run(
+        [
+            "systemd-run",
+            f"--unit={Q_UNIT}",
+            f"--on-active={secs}s",
+            "--collect",
+            SELF,
+            "quarantine",
+            "off",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if arm.returncode != 0:
+        raise NftError(
+            f"cannot arm auto-revert timer; refusing to quarantine: {arm.stderr.strip()}"
+        )
+    nft(["delete", "table", "inet", Q_TABLE], run)  # idempotent re-apply
+    res = nft(["-f", "-"], run, stdin=Q_RULESET)
+    if res.returncode != 0:
+        run(
+            ["systemctl", "stop", f"{Q_UNIT}.timer"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        raise NftError(f"quarantine ruleset failed: {res.stderr.strip()}")
+    until = now() + secs
+    _q_state_write(until)
+    return {"ok": True, "active": True, "until": until, "seconds": secs}
+
+
+def cmd_quarantine_off(run=subprocess.run) -> dict:
+    run(
+        ["systemctl", "stop", f"{Q_UNIT}.timer"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    nft(["delete", "table", "inet", Q_TABLE], run)
+    _q_state_write(None)
+    return {"ok": True, "active": False}
+
+
+def cmd_quarantine_status(run=subprocess.run, now=time.time) -> dict:
+    live = nft(["list", "table", "inet", Q_TABLE], run).returncode == 0
+    until = _q_state_read() if live else 0.0
+    return {
+        "ok": True,
+        "active": live,
+        "until": until or None,
+        "remaining": max(0, int(until - now())) if live and until else None,
+    }
+
+
 def cmd_init(run=subprocess.run, now=time.time) -> dict:
     """Create the table and re-add every unexpired block from the state file."""
     ensure_table(run)
+    if nft(["list", "table", "inet", Q_TABLE], run).returncode != 0:
+        _q_state_write(None)  # quarantine is deliberately NOT restored after reboot
     current = now()
     state = {ip: exp for ip, exp in read_state().items() if exp > current}
     allow = load_allowlist()
@@ -263,13 +401,19 @@ def main(argv: list | None = None) -> int:
             out = cmd_add(argv[1], argv[2])
         elif argv[:1] == ["del"] and len(argv) == 2:
             out = cmd_del(argv[1])
+        elif argv[:2] == ["quarantine", "on"] and len(argv) == 3:
+            out = cmd_quarantine_on(argv[2])
+        elif argv == ["quarantine", "off"]:
+            out = cmd_quarantine_off()
+        elif argv == ["quarantine", "status"]:
+            out = cmd_quarantine_status()
         elif argv == ["list"]:
             out = cmd_list()
         elif argv == ["flush"]:
             out = cmd_flush()
         else:
             raise Refused(
-                "usage: sysmon-block init|add <ip> <secs>|del <ip>|list|flush"
+                "usage: sysmon-block init|add <ip> <secs>|del <ip>|list|flush|quarantine on <secs>|off|status"
             )
     except Refused as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
