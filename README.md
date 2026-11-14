@@ -162,6 +162,13 @@ All configuration is via environment variables — no config files to manage.
 | `SYSMONITOR_TOKEN` | *(empty)* | Optional Bearer token for API auth |
 | `SYSMONITOR_SERVICES` | `ssh,nginx,docker,ollama,mosquitto,cron,avahi-daemon` | Comma-separated service whitelist |
 | `SYSMONITOR_REFRESH` | `2` | Frontend polling interval (seconds) |
+| `SYSMONITOR_ALERT_WEBHOOK_URL` | _(empty)_ | POST JSON alert events here (outbound alerting is off unless this or the ntfy URL is set) |
+| `SYSMONITOR_ALERT_NTFY_URL` | _(empty)_ | ntfy topic URL; alerts POST as plain text with Title/Priority headers |
+| `SYSMONITOR_ALERT_INTERVAL` | `30` | Seconds between alert evaluations (min 5) |
+| `SYSMONITOR_ALERT_CONFIRM` | `2` | Consecutive bad samples before an alert fires (debounce) |
+| `SYSMONITOR_ALERT_DISK_PERCENT` | `90` | Filesystem usage that triggers a disk alert |
+| `SYSMONITOR_ALERT_GPU_TEMP` | `83` | GPU temperature (°C) that triggers an alert |
+| `SYSMONITOR_ALERT_VRAM_PERCENT` | `95` | VRAM usage that triggers an alert |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list across restarts |
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity that counts as "actionable" (drives the Security Alert card) — one of `info`, `low`, `medium`, `high`, `critical` |
 | `HIDDENSCOPE_SCAN_PATH` | *(empty)* | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |
@@ -218,6 +225,7 @@ The web UI currently does not send auth headers — token auth is designed for A
 | `/api/services/config` | GET/POST | List / add a monitored service |
 | `/api/services/config/<svc>` | DELETE/PUT | Remove / rename a monitored service |
 | `/api/ports` | GET | Open TCP/UDP ports (well-known + registered range, 0-49151) |
+| `/api/alerts` | GET | Firing outbound alerts + recent transition history |
 | `/api/gpu` | GET | NVIDIA GPU utilisation, VRAM, temperature, power and per-process VRAM (`available:false` without `nvidia-smi`) |
 | `/api/diskio` | GET | Per-disk read/write throughput, IOPS and busy % |
 | `/api/llm` | GET | Detected LLM-serving ports and, for each, whether it's serving a model and which one(s) |

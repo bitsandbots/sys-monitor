@@ -170,6 +170,19 @@ Per-interface stats with throughput rates.
 
 ---
 
+### Alerts
+
+#### `GET /api/alerts`
+Currently-firing outbound alerts and recent transition history (newest first, max 200). `enabled` is false when no webhook/ntfy destination is configured. See `docs/alerts.md`.
+
+```json
+{"enabled": true,
+ "active": [{"rule": "disk:/", "severity": "warning", "message": "Disk / at 93% (4100 MB free)"}],
+ "history": [{"ts": 1763136316.2, "event": "alert", "rule": "disk:/", "severity": "warning", "message": "..."}]}
+```
+
+---
+
 ### Disk I/O
 
 #### `GET /api/diskio`
