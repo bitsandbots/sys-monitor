@@ -132,6 +132,25 @@ If `hiddenscope_scanner.py` isn't present on a node, the Security tab reports mo
 
 ---
 
+## Outbound Alerts (node agent)
+
+The node agent can push alerts without a dashboard open or a hub running. Set `SYSMONITOR_ALERT_WEBHOOK_URL` and/or `SYSMONITOR_ALERT_NTFY_URL` (see `docs/setup.md` for all variables).
+
+| Rule id | Fires when | Severity |
+|---------|-----------|----------|
+| `cpu_temp` | CPU temperature level is warning/critical/throttling | warning / critical |
+| `disk:<mount>` | Filesystem usage ≥ `SYSMONITOR_ALERT_DISK_PERCENT` | warning |
+| `gpu_temp:<n>` | GPU temp ≥ `SYSMONITOR_ALERT_GPU_TEMP` | critical |
+| `vram:<n>` | VRAM ≥ `SYSMONITOR_ALERT_VRAM_PERCENT` | warning |
+| `service:<name>` | A critical system service is down | critical |
+| `security` | hiddenscope reports actionable findings | critical |
+
+An alert fires after `SYSMONITOR_ALERT_CONFIRM` consecutive bad samples, notifies **once** per transition, and sends an `alert_recovered` event on the first clean sample. If a data source is unavailable (e.g. no `nvidia-smi`) its rules are skipped, never treated as recovered. Delivery failures are logged to the event log and never stop the sampler.
+
+Webhook payload: `{"event": "alert"|"alert_recovered", "rule", "severity", "host", "message", "timestamp"}`. `GET /api/alerts` returns the currently firing alerts and the last 200 transitions.
+
+---
+
 ## Frontend Alert Cards
 
 Four alert cards appear on the Overview tab when conditions warrant:

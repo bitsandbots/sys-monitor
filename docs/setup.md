@@ -82,6 +82,13 @@ Edit `/etc/systemd/system/sys-monitor.service` to set environment variables befo
 | `SYSMONITOR_TOKEN` | _(empty)_ | Bearer token for auth. Empty = auth disabled |
 | `SYSMONITOR_SERVICES` | `ssh,nginx,docker,...` | Comma-separated list of systemd services to monitor |
 | `SYSMONITOR_REFRESH` | `2` | Dashboard auto-refresh interval in seconds |
+| `SYSMONITOR_ALERT_WEBHOOK_URL` | _(empty)_ | POST JSON alert events here (outbound alerting is off unless this or the ntfy URL is set) |
+| `SYSMONITOR_ALERT_NTFY_URL` | _(empty)_ | ntfy topic URL; alerts POST as plain text with Title/Priority headers |
+| `SYSMONITOR_ALERT_INTERVAL` | `30` | Seconds between alert evaluations (min 5) |
+| `SYSMONITOR_ALERT_CONFIRM` | `2` | Consecutive bad samples before an alert fires (debounce) |
+| `SYSMONITOR_ALERT_DISK_PERCENT` | `90` | Filesystem usage that triggers a disk alert |
+| `SYSMONITOR_ALERT_GPU_TEMP` | `83` | GPU temperature (°C) that triggers an alert |
+| `SYSMONITOR_ALERT_VRAM_PERCENT` | `95` | VRAM usage that triggers an alert |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list |
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity counted as "actionable" (drives the Security Alert card) |
 | `HIDDENSCOPE_SCAN_PATH` | _(empty)_ | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |

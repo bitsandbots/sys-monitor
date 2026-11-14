@@ -60,6 +60,14 @@ CONFIG = {
         if s.strip()
     ],
     "refresh_interval": int(os.getenv("SYSMONITOR_REFRESH", "2")),
+    # Outbound alerting (disabled unless at least one destination is set)
+    "alert_webhook_url": os.getenv("SYSMONITOR_ALERT_WEBHOOK_URL", ""),
+    "alert_ntfy_url": os.getenv("SYSMONITOR_ALERT_NTFY_URL", ""),
+    "alert_interval": float(os.getenv("SYSMONITOR_ALERT_INTERVAL", "30")),
+    "alert_confirm_samples": int(os.getenv("SYSMONITOR_ALERT_CONFIRM", "2")),
+    "alert_disk_percent": float(os.getenv("SYSMONITOR_ALERT_DISK_PERCENT", "90")),
+    "alert_gpu_temp_c": float(os.getenv("SYSMONITOR_ALERT_GPU_TEMP", "83")),
+    "alert_vram_percent": float(os.getenv("SYSMONITOR_ALERT_VRAM_PERCENT", "95")),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1781,6 +1789,169 @@ def get_log(limit: int = 100) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Outbound Alerting
+# ═══════════════════════════════════════════════════════════════════════════
+_alert_lock = threading.Lock()
+_alert_active: dict = {}  # rule_id -> {"severity","message"} while firing
+_alert_streak: dict = {}  # rule_id -> (consecutive_bad_samples)
+_alert_history: deque = deque(maxlen=200)
+
+
+def _collect_alert_conditions() -> dict:
+    """Evaluate every alert rule against live metrics.
+
+    Returns:
+        Mapping of rule_id to (severity, message) for each rule that is
+        currently violated. Rules whose data source is unavailable are
+        omitted, so a failed read never looks like a recovery.
+    """
+    bad: dict = {}
+    temp = get_temperature_status()
+    if temp.get("level") in ("warning", "critical", "throttling"):
+        sev = "warning" if temp["level"] == "warning" else "critical"
+        bad["cpu_temp"] = (sev, temp.get("message") or f"CPU temperature {temp['level']}")
+
+    for d in get_storage():
+        if d["percent"] >= CONFIG["alert_disk_percent"]:
+            bad[f"disk:{d['mount']}"] = (
+                "warning",
+                f"Disk {d['mount']} at {d['percent']}% ({d['avail_mb']} MB free)",
+            )
+
+    gpu = get_gpu()
+    for g in gpu["gpus"]:
+        if g["temp_c"] is not None and g["temp_c"] >= CONFIG["alert_gpu_temp_c"]:
+            bad[f"gpu_temp:{g['index']}"] = (
+                "critical",
+                f"GPU {g['index']} ({g['name']}) at {g['temp_c']:.0f}°C",
+            )
+        if g["mem_percent"] is not None and g["mem_percent"] >= CONFIG["alert_vram_percent"]:
+            bad[f"vram:{g['index']}"] = (
+                "warning",
+                f"GPU {g['index']} VRAM at {g['mem_percent']:.0f}%",
+            )
+
+    for svc in get_critical_services_status():
+        name = svc.get("name") or svc.get("service") or str(svc)
+        bad[f"service:{name}"] = ("critical", f"Critical service down: {name}")
+
+    if HIDDENSCOPE_AVAILABLE:
+        sec = get_security_status()
+        if sec.get("available") and sec.get("actionable_count", 0) > 0:
+            bad["security"] = (
+                "critical",
+                f"{sec['actionable_count']} actionable security finding(s)",
+            )
+    return bad
+
+
+def _send_alert(event: str, rule: str, severity: str, message: str) -> None:
+    """Deliver one alert to every configured destination (best effort).
+
+    Failures are logged to the event log and swallowed: an unreachable
+    receiver must never stall the sampler or crash the agent.
+    """
+    host = socket.gethostname()
+    payload = {
+        "event": event,
+        "rule": rule,
+        "severity": severity,
+        "host": host,
+        "message": message,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    url = CONFIG["alert_webhook_url"]
+    if url:
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5).close()
+        except Exception as exc:  # noqa: BLE001 - delivery is best effort
+            log_event(f"Alert webhook delivery failed for {rule}: {exc}", "warning")
+    ntfy = CONFIG["alert_ntfy_url"]
+    if ntfy:
+        recovered = event.endswith("_recovered")
+        prio = "default" if recovered else ("urgent" if severity == "critical" else "high")
+        try:
+            req = urllib.request.Request(
+                ntfy,
+                data=message.encode(),
+                headers={
+                    # HTTP headers must be latin-1; keep the title ASCII-safe.
+                    "Title": f"{host}: {'recovered' if recovered else severity}".encode(
+                        "ascii", "replace"
+                    ).decode(),
+                    "Priority": prio,
+                    "Tags": "white_check_mark" if recovered else "warning",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5).close()
+        except Exception as exc:  # noqa: BLE001
+            log_event(f"Alert ntfy delivery failed for {rule}: {exc}", "warning")
+
+
+def _alert_tick(bad: dict) -> list:
+    """Advance the alert state machine one sample.
+
+    A rule fires after CONFIG["alert_confirm_samples"] consecutive bad
+    samples (debounce) and recovers on the first clean sample. Notifies
+    once per transition, not every sample.
+
+    Args:
+        bad: Output of _collect_alert_conditions().
+
+    Returns:
+        The list of (event, rule) transitions emitted this tick.
+    """
+    need = max(1, CONFIG["alert_confirm_samples"])
+    fired = []
+    with _alert_lock:
+        for rule, (sev, msg) in bad.items():
+            _alert_streak[rule] = _alert_streak.get(rule, 0) + 1
+            if rule not in _alert_active and _alert_streak[rule] >= need:
+                _alert_active[rule] = {"severity": sev, "message": msg}
+                fired.append(("alert", rule, sev, msg))
+        for rule in [r for r in _alert_active if r not in bad]:
+            info = _alert_active.pop(rule)
+            fired.append(("alert_recovered", rule, info["severity"], f"Recovered: {info['message']}"))
+        for rule in [r for r in _alert_streak if r not in bad]:
+            del _alert_streak[rule]
+        for event, rule, sev, msg in fired:
+            _alert_history.append(
+                {"ts": time.time(), "event": event, "rule": rule, "severity": sev, "message": msg}
+            )
+    for event, rule, sev, msg in fired:
+        log_event(f"ALERT {event}: {msg}", "error" if event == "alert" else "success")
+        _send_alert(event, rule, sev, msg)
+    return [(e, r) for e, r, _, _ in fired]
+
+
+def _alert_loop() -> None:
+    """Background sampler: evaluate rules every alert_interval seconds."""
+    while True:
+        try:
+            _alert_tick(_collect_alert_conditions())
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            log_event(f"Alert sampler error: {exc}", "warning")
+        time.sleep(max(5.0, CONFIG["alert_interval"]))
+
+
+def start_alerting() -> bool:
+    """Start the alert sampler if a destination is configured."""
+    if not (CONFIG["alert_webhook_url"] or CONFIG["alert_ntfy_url"]):
+        return False
+    if CONFIG["alert_interval"] <= 0:
+        return False
+    threading.Thread(target=_alert_loop, daemon=True, name="alert-sampler").start()
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 @app.route("/")
@@ -1832,6 +2003,22 @@ def api_storage():
 @require_auth
 def api_network():
     return jsonify(get_network())
+
+
+@app.route("/api/alerts")
+@require_auth
+def api_alerts():
+    """Currently-firing alerts plus recent transition history (newest first)."""
+    with _alert_lock:
+        active = [{"rule": r, **i} for r, i in _alert_active.items()]
+        history = list(_alert_history)[::-1]
+    return jsonify(
+        {
+            "enabled": bool(CONFIG["alert_webhook_url"] or CONFIG["alert_ntfy_url"]),
+            "active": active,
+            "history": history,
+        }
+    )
 
 
 @app.route("/api/diskio")
@@ -2236,6 +2423,8 @@ if __name__ == "__main__":
     )
     if start_security_watcher():
         log_event(f"Security watcher: every {HIDDENSCOPE_WATCH_INTERVAL:g}s")
+    if start_alerting():
+        log_event(f"Outbound alerting: every {CONFIG['alert_interval']:g}s")
     log_event(f"Listening on http://{CONFIG['host']}:{CONFIG['port']}")
     log_event("SysMonitor ready.", "success")
 
