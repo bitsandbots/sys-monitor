@@ -32,7 +32,11 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, render_template, request, abort
 
-app = Flask(__name__)
+# Installed layout ships hub/static/; a repo checkout shares the node's top-level
+# static/ (fonts + cc-base.css), so fall back to that when running from source.
+_HUB_DIR = Path(__file__).resolve().parent
+_STATIC_DIR = _HUB_DIR / "static" if (_HUB_DIR / "static").is_dir() else _HUB_DIR.parent / "static"
+app = Flask(__name__, static_folder=str(_STATIC_DIR))
 
 VERSION = "2.5.1"
 
