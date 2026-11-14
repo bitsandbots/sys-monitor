@@ -17,14 +17,16 @@ License: MIT
 import json
 import os
 import re
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from functools import wraps
-from ipaddress import IPv4Network
+from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 
 import requests
@@ -550,6 +552,77 @@ def _discover_subnet(subnet=None, port=None, timeout=1.5):
     return sorted(found, key=lambda x: x["host"])
 
 
+MDNS_SERVICE_TYPE = "_sysmonitor._tcp"
+
+
+def _avahi_unescape(field):
+    """Decode avahi-browse -p escapes (\\DDD is a decimal byte)."""
+    return re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1))), field)
+
+
+def _parse_avahi_browse(text):
+    """Parse `avahi-browse -rpt` output into resolved IPv4 service entries.
+
+    Only resolved ('=') IPv4 lines are kept; duplicates (same address and
+    port seen on several interfaces) collapse to one entry.
+    """
+    seen = {}
+    for line in text.splitlines():
+        parts = line.split(";")
+        if len(parts) < 9 or parts[0] != "=" or parts[2] != "IPv4":
+            continue
+        address, port = parts[7], parts[8]
+        if not port.isdigit():
+            continue
+        try:
+            IPv4Address(address)
+        except ValueError:
+            continue
+        txt = {}
+        for item in re.findall(r'"([^"]*)"', ";".join(parts[9:])):
+            key, _, val = item.partition("=")
+            txt[key] = val
+        seen.setdefault(
+            (address, int(port)),
+            {
+                "host": address,
+                "port": int(port),
+                "hostname": txt.get("hostname") or _avahi_unescape(parts[6]).removesuffix(".local"),
+                "model": txt.get("model", ""),
+                "version": txt.get("version", ""),
+            },
+        )
+    return list(seen.values())
+
+
+def _discover_mdns(timeout=8):
+    """Find SysMonitor agents advertised over mDNS via avahi-browse.
+
+    Returns:
+        list of discovery entries (same shape as _discover_subnet), or None
+        when avahi-browse is not installed.
+    """
+    if not shutil.which("avahi-browse"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["avahi-browse", "-rpt", MDNS_SERVICE_TYPE],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    registered = _get_all_nodes()
+    found = []
+    for e in _parse_avahi_browse(proc.stdout):
+        nid = _generate_id(e["host"], e["port"])
+        e["id"] = nid
+        e["already_registered"] = nid in registered
+        found.append(e)
+    return sorted(found, key=lambda x: x["host"])
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Serialization Helper
 # ═══════════════════════════════════════════════════════════════════════════
@@ -706,6 +779,17 @@ def api_update_node(nid):
 @require_auth
 def api_discover():
     data = request.get_json(silent=True) or {}
+    method = data.get("method") or "scan"
+    if method == "mdns":
+        found = _discover_mdns()
+        if found is None:
+            return (
+                jsonify({"error": "avahi-browse not installed (apt install avahi-utils)", "found": [], "count": 0}),
+                501,
+            )
+        return jsonify({"found": found, "count": len(found), "method": "mdns"})
+    if method != "scan":
+        return jsonify({"error": "method must be 'scan' or 'mdns'"}), 400
     subnet = (data.get("subnet") or "").strip() or None
     port = data.get("port") or None
     found = _discover_subnet(subnet, port)

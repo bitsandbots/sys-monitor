@@ -1,0 +1,15 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Advertises this SysMonitor node over mDNS so a Fleet Hub can find it
+     (POST /api/discover {"method": "mdns"}). Installed by install.sh to
+     /etc/avahi/services/ when avahi-daemon is present; @PORT@/@VERSION@ are
+     filled in at install time. -->
+<service-group>
+  <name replace-wildcards="yes">SysMonitor on %h</name>
+  <service>
+    <type>_sysmonitor._tcp</type>
+    <port>@PORT@</port>
+    <txt-record>app=sys-monitor</txt-record>
+    <txt-record>version=@VERSION@</txt-record>
+  </service>
+</service-group>
