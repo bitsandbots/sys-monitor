@@ -1,0 +1,31 @@
+/* SysMonitor shared base styles — linked by the node dashboard and the Fleet Hub.
+   Holds only rules that were byte-identical in both UIs (zero visual change):
+   fonts, brand tokens, the box-model reset and a few common components.
+   Palette values that differ between the two UIs live in each template's :root. */
+@font-face { font-family:"Exo 2"; src:url("/static/fonts/exo-2-latin-700-normal.woff2") format("woff2"); font-weight:700; font-display:swap; }
+@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
+@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-600-normal.woff2") format("woff2"); font-weight:600; font-display:swap; }
+@font-face { font-family:"IBM Plex Mono"; src:url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
+
+:root {
+  --blue: #2b7de9;
+  --orange: #e07018;
+  --font-display: 'Exo 2', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+::-webkit-scrollbar-track { background: transparent; }
+.bar-meta .lbl { color: var(--text-secondary); }
+.bar-meta .val { color: var(--text-muted); }
+.svc-dot.off { background: #475569; }
+.svc-btn:active { transform: scale(0.95); }
+.proc-tbl .r { text-align: right; }
+.info-key { color: var(--text-muted); }
+.modal-overlay.show { display: flex; }
+.modal-confirm { border: 1px solid; }
+.log-info { color: var(--green); }
+.log-warning { color: var(--orange); }
+.log-error { color: var(--red); }
+.log-success { color: var(--cyan); }
+.toast.show { display: block; }

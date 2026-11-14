@@ -5,12 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>SysMonitor — {{ boot.hostname or 'loading' }}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230c1a2e'/><text x='16' y='22' text-anchor='middle' font-size='18' fill='%232b7de9' font-family='sans-serif' font-weight='bold'>S</text></svg>">
-<style>
-@font-face { font-family:"Exo 2"; src:url("/static/fonts/exo-2-latin-700-normal.woff2") format("woff2"); font-weight:700; font-display:swap; }
-@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
-@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-600-normal.woff2") format("woff2"); font-weight:600; font-display:swap; }
-@font-face { font-family:"IBM Plex Mono"; src:url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
-</style>
+<link rel="stylesheet" href="/static/cc-base.css">
 <style>
 /* ═══ Foundation ═══ */
 :root {
@@ -25,18 +20,12 @@
   --text-secondary: #c8d3e0;
   --text-muted: #5a7090;
   --text-label: #8a9bb5;
-  --blue: #2b7de9;
-  --orange: #e07018;
   --green: #4ade80;
   --red: #ef4444;
   --purple: #a855f7;
   --yellow: #fbbf24;
   --cyan: #22d3ee;
-  --font-display: 'Exo 2', sans-serif;
-  --font-body: 'Plus Jakarta Sans', sans-serif;
-  --font-mono: 'IBM Plex Mono', monospace;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: linear-gradient(160deg, var(--bg-deep) 0%, var(--bg-primary) 30%, #0d1628 100%);
   color: var(--text-secondary);
@@ -46,7 +35,6 @@ body {
 }
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-thumb { background: #2a3a55; border-radius: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
 
 /* ═══ Boot Screen ═══ */
 #boot-screen {
@@ -154,8 +142,6 @@ body {
 /* ═══ Usage Bars ═══ */
 .bar-wrap { margin-bottom: 8px; }
 .bar-meta { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; font-family: var(--font-mono); }
-.bar-meta .lbl { color: var(--text-secondary); }
-.bar-meta .val { color: var(--text-muted); }
 .bar-track { height: 6px; border-radius: 3px; background: #141e30; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
 
@@ -172,7 +158,6 @@ body {
   transition: all 0.3s;
 }
 .svc-dot.on { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,0.4); }
-.svc-dot.off { background: #475569; }
 .svc-info { flex: 1; min-width: 120px; }
 .svc-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); font-weight: 500; }
 .svc-desc { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
@@ -238,7 +223,6 @@ body {
   font-family: var(--font-mono); font-weight: 500; cursor: pointer;
   border: 1px solid; transition: all 0.15s; letter-spacing: 0.3px;
 }
-.svc-btn:active { transform: scale(0.95); }
 .svc-btn.go   { background: #0d2818; color: var(--green); border-color: #1a4028; }
 .svc-btn.halt { background: #2a1414; color: var(--red); border-color: #4a2020; }
 .svc-btn.cyc  { background: #1e2010; color: var(--orange); border-color: #3a3010; }
@@ -319,7 +303,6 @@ body {
   text-transform: uppercase;
 }
 .proc-tbl td { padding: 6px; color: var(--text-secondary); border-bottom: 1px solid #111a28; }
-.proc-tbl .r { text-align: right; }
 .proc-tbl .cmd { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-label); font-size: 10px; }
 .kill-btn {
   padding: 2px 8px; border-radius: 4px; font-size: 9px;
@@ -348,7 +331,6 @@ body {
   display: flex; justify-content: space-between; padding: 5px 0;
   border-bottom: 1px solid #111a28; font-size: 11px; font-family: var(--font-mono);
 }
-.info-key { color: var(--text-muted); }
 .info-val { color: var(--text-secondary); text-align: right; max-width: 58%; word-break: break-word; }
 
 /* ═══ Power ═══ */
@@ -368,7 +350,6 @@ body {
   display: none; align-items: center; justify-content: center; z-index: 200;
   backdrop-filter: blur(4px);
 }
-.modal-overlay.show { display: flex; }
 .modal-box {
   background: #111d30; border: 1px solid #3a1e1e; border-radius: 12px;
   padding: 28px; max-width: 340px; width: 90%; text-align: center;
@@ -382,7 +363,6 @@ body {
   font-weight: 600; font-size: 11px; cursor: pointer;
 }
 .modal-cancel { background: #1a2640; border: 1px solid #2a3a50; color: var(--text-muted); }
-.modal-confirm { border: 1px solid; }
 
 /* ═══ Logs ═══ */
 .log-area {
@@ -391,10 +371,6 @@ body {
   font-size: 11px; line-height: 1.7;
 }
 .log-ts { color: #2a3a50; }
-.log-info { color: var(--green); }
-.log-warning { color: var(--orange); }
-.log-error { color: var(--red); }
-.log-success { color: var(--cyan); }
 
 /* ═══ Toast ═══ */
 .toast {
@@ -404,7 +380,6 @@ body {
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   animation: toastIn 0.3s ease; display: none;
 }
-.toast.show { display: block; }
 .toast.success { background: #0d2818; border: 1px solid #1a4028; color: var(--green); }
 .toast.warning { background: #2e2a1a; border: 1px solid #4a3a1a; color: var(--orange); }
 .toast.error   { background: #2a1414; border: 1px solid #4a2020; color: var(--red); }
