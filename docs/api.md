@@ -170,6 +170,22 @@ Per-interface stats with throughput rates.
 
 ---
 
+### History
+
+#### `GET /api/history`
+SQLite-backed metric history. Disabled (`{"enabled": false, "points": []}`) unless a history DB is configured.
+
+- `GET /api/history` — lists recorded metric names.
+- `GET /api/history?metric=<name>&range=1h|6h|24h|7d` — series of `[unix_ts, avg_value]`, averaged into at most 500 buckets. Unknown `range` → 400.
+
+Metrics: `cpu_percent`, `cpu_temp_c`, `mem_percent`, `net_rx_bps`, `net_tx_bps` (physical interfaces only), and per-instance `disk_used_percent:<mount>`, `disk_busy_percent|disk_read_bps|disk_write_bps:<disk>`, `gpu_util_percent|gpu_vram_percent|gpu_temp_c|gpu_power_w:<index>`.
+
+```json
+{"enabled": true, "metric": "cpu_percent", "range": "24h", "points": [[1763136000, 4.2], [1763136180, 6.8]]}
+```
+
+---
+
 ### Alerts
 
 #### `GET /api/alerts`

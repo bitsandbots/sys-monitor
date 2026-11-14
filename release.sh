@@ -110,6 +110,7 @@ RELEASE_FILES=(
   templates/index.html
   static
   sys-monitor.service
+  contrib
   install.sh
   update.sh
   release.sh

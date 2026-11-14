@@ -22,6 +22,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -68,6 +69,16 @@ CONFIG = {
     "alert_disk_percent": float(os.getenv("SYSMONITOR_ALERT_DISK_PERCENT", "90")),
     "alert_gpu_temp_c": float(os.getenv("SYSMONITOR_ALERT_GPU_TEMP", "83")),
     "alert_vram_percent": float(os.getenv("SYSMONITOR_ALERT_VRAM_PERCENT", "95")),
+    # Metrics history (SQLite). Enabled when a DB path is set explicitly or
+    # systemd provides STATE_DIRECTORY (StateDirectory=sys-monitor).
+    "history_db": os.getenv("SYSMONITOR_HISTORY_DB")
+    or (
+        str(Path(os.environ["STATE_DIRECTORY"].split(":")[0]) / "metrics.db")
+        if os.getenv("STATE_DIRECTORY")
+        else ""
+    ),
+    "history_interval": float(os.getenv("SYSMONITOR_HISTORY_INTERVAL", "60")),
+    "history_days": float(os.getenv("SYSMONITOR_HISTORY_DAYS", "7")),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1952,6 +1963,142 @@ def start_alerting() -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Metrics History (SQLite)
+# ═══════════════════════════════════════════════════════════════════════════
+_HISTORY_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+_HISTORY_MAX_POINTS = 500
+_history_lock = threading.Lock()
+_NET_SKIP = re.compile(r"^(veth|br-|docker|virbr|lo$)")
+
+
+def _history_enabled() -> bool:
+    return bool(CONFIG["history_db"])
+
+
+def _history_conn() -> sqlite3.Connection:
+    """Open the history DB, creating the schema on first use."""
+    conn = sqlite3.connect(CONFIG["history_db"], timeout=5)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS samples ("
+        "ts INTEGER NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_samples_metric_ts ON samples(metric, ts)")
+    return conn
+
+
+def _collect_history_sample() -> dict:
+    """Gather one flat {metric: value} snapshot from the live getters.
+
+    Sources that are unavailable (no GPU, no disks) simply contribute no
+    keys. Rate metrics use the same differential samplers as the dashboard.
+    """
+    m: dict = {}
+    m["cpu_percent"] = float(get_cpu_usage()["usage"])
+    temp = get_cpu_temperature()
+    if temp:
+        m["cpu_temp_c"] = float(temp)
+    m["mem_percent"] = float(get_memory()["percent"])
+    for d in get_storage():
+        m[f"disk_used_percent:{d['mount']}"] = float(d["percent"])
+    rates = get_network()["rates"]
+    m["net_rx_bps"] = float(sum(r["rx_rate"] for n, r in rates.items() if not _NET_SKIP.match(n)))
+    m["net_tx_bps"] = float(sum(r["tx_rate"] for n, r in rates.items() if not _NET_SKIP.match(n)))
+    for name, d in get_disk_io()["disks"].items():
+        m[f"disk_busy_percent:{name}"] = d["busy_percent"]
+        m[f"disk_read_bps:{name}"] = float(d["read_bps"])
+        m[f"disk_write_bps:{name}"] = float(d["write_bps"])
+    for g in get_gpu()["gpus"]:
+        i = g["index"]
+        for key, val in (
+            ("gpu_util_percent", g["util_percent"]),
+            ("gpu_vram_percent", g["mem_percent"]),
+            ("gpu_temp_c", g["temp_c"]),
+            ("gpu_power_w", g["power_w"]),
+        ):
+            if val is not None:
+                m[f"{key}:{i}"] = float(val)
+    return m
+
+
+def _history_record(sample: dict, now: float | None = None) -> int:
+    """Write one sample (one row per metric). Returns rows written."""
+    ts = int(now if now is not None else time.time())
+    rows = [(ts, k, v) for k, v in sample.items()]
+    with _history_lock, _history_conn() as conn:
+        conn.executemany("INSERT INTO samples (ts, metric, value) VALUES (?, ?, ?)", rows)
+    return len(rows)
+
+
+def _history_prune(now: float | None = None) -> int:
+    """Delete samples older than history_days. Returns rows removed."""
+    cutoff = int((now if now is not None else time.time()) - CONFIG["history_days"] * 86400)
+    with _history_lock, _history_conn() as conn:
+        return conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,)).rowcount
+
+
+def get_history(metric: str, range_key: str = "1h", now: float | None = None) -> dict:
+    """Return a downsampled series for one metric.
+
+    Args:
+        metric: Exact metric name (see get_history_metrics()).
+        range_key: One of _HISTORY_RANGES.
+        now: Override the current time (tests).
+
+    Returns:
+        {"metric", "range", "points": [[ts, avg_value], ...]} with at most
+        _HISTORY_MAX_POINTS points, averaged per time bucket.
+
+    Raises:
+        ValueError: range_key is not a supported range.
+    """
+    if range_key not in _HISTORY_RANGES:
+        raise ValueError(f"range must be one of {sorted(_HISTORY_RANGES)}")
+    span = _HISTORY_RANGES[range_key]
+    end = int(now if now is not None else time.time())
+    bucket = max(1, span // _HISTORY_MAX_POINTS)
+    with _history_lock, _history_conn() as conn:
+        rows = conn.execute(
+            "SELECT (ts / ?) * ? AS b, AVG(value) FROM samples "
+            "WHERE metric = ? AND ts >= ? GROUP BY b ORDER BY b",
+            (bucket, bucket, metric, end - span),
+        ).fetchall()
+    return {"metric": metric, "range": range_key, "points": [[b, round(v, 2)] for b, v in rows]}
+
+
+def get_history_metrics() -> list:
+    """List metric names that have recorded samples."""
+    with _history_lock, _history_conn() as conn:
+        return [r[0] for r in conn.execute("SELECT DISTINCT metric FROM samples ORDER BY metric")]
+
+
+def _history_loop() -> None:
+    """Background sampler: record every history_interval, prune hourly."""
+    last_prune = 0.0
+    while True:
+        try:
+            _history_record(_collect_history_sample())
+            if time.time() - last_prune > 3600:
+                _history_prune()
+                last_prune = time.time()
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            log_event(f"History sampler error: {exc}", "warning")
+        time.sleep(max(5.0, CONFIG["history_interval"]))
+
+
+def start_history() -> bool:
+    """Start the history sampler if a DB path is configured."""
+    if not _history_enabled() or CONFIG["history_interval"] <= 0:
+        return False
+    try:
+        _history_conn().close()
+    except (sqlite3.Error, OSError) as exc:
+        log_event(f"History disabled — cannot open {CONFIG['history_db']}: {exc}", "warning")
+        return False
+    threading.Thread(target=_history_loop, daemon=True, name="history-sampler").start()
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 @app.route("/")
@@ -2019,6 +2166,22 @@ def api_alerts():
             "history": history,
         }
     )
+
+
+@app.route("/api/history")
+@require_auth
+def api_history():
+    """Downsampled history for one metric: ?metric=<name>&range=1h|6h|24h|7d."""
+    if not _history_enabled():
+        return jsonify({"enabled": False, "points": []})
+    metric = request.args.get("metric", "")
+    if not metric:
+        return jsonify({"enabled": True, "metrics": get_history_metrics()})
+    try:
+        data = get_history(metric, request.args.get("range", "1h"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"enabled": True, **data})
 
 
 @app.route("/api/diskio")
@@ -2423,6 +2586,8 @@ if __name__ == "__main__":
     )
     if start_security_watcher():
         log_event(f"Security watcher: every {HIDDENSCOPE_WATCH_INTERVAL:g}s")
+    if start_history():
+        log_event(f"Metrics history: {CONFIG['history_db']} every {CONFIG['history_interval']:g}s, keep {CONFIG['history_days']:g}d")
     if start_alerting():
         log_event(f"Outbound alerting: every {CONFIG['alert_interval']:g}s")
     log_event(f"Listening on http://{CONFIG['host']}:{CONFIG['port']}")
