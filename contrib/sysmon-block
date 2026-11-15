@@ -39,11 +39,21 @@ from pathlib import Path
 TABLE = "sysmon"
 MIN_TTL = 60
 MAX_TTL = 30 * 86400
-STATE_FILE = Path(
-    os.environ.get("SYSMON_BLOCK_STATE", "/var/lib/sysmon-block/state.json")
-)
+
+
+def _override(name: str, default: str) -> str:
+    """Environment override for tests and unusual layouts, ignored when root.
+
+    The helper runs as root through sudo; it must not take paths or programs
+    from its caller's environment (sudo's env_reset usually strips them, but a
+    root program should not depend on that).
+    """
+    return default if os.geteuid() == 0 else os.environ.get(name, default)
+
+
+STATE_FILE = Path(_override("SYSMON_BLOCK_STATE", "/var/lib/sysmon-block/state.json"))
 ALLOWLIST_FILE = Path(
-    os.environ.get("SYSMON_BLOCK_ALLOWLIST", "/etc/sys-monitor/block-allowlist")
+    _override("SYSMON_BLOCK_ALLOWLIST", "/etc/sys-monitor/block-allowlist")
 )
 
 RULESET = f"""table inet {TABLE} {{
@@ -62,9 +72,9 @@ Q_TABLE = "sysmon_q"
 Q_MIN, Q_MAX = 60, 3600
 Q_UNIT = "sysmon-quarantine-revert"
 Q_STATE = Path(
-    os.environ.get("SYSMON_QUARANTINE_STATE", "/var/lib/sysmon-block/quarantine.json")
+    _override("SYSMON_QUARANTINE_STATE", "/var/lib/sysmon-block/quarantine.json")
 )
-SELF = os.environ.get("SYSMON_BLOCK_SELF", "/usr/local/sbin/sysmon-block")
+SELF = _override("SYSMON_BLOCK_SELF", "/usr/local/sbin/sysmon-block")
 
 # Quarantine drops everything leaving the host (output) or being routed for
 # containers (forward) except private/LAN/loopback destinations and SSH replies.

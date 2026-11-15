@@ -68,6 +68,7 @@ counted as `suppressed` in `/api/threats`. `info` findings are stored only.
 | `SYSMONITOR_THREAT_RETENTION_DAYS` | `30` | Finding retention |
 | `SYSMONITOR_THREAT_NOTIFY_PER_HOUR` | `20` | Notification cap |
 | `SYSMONITOR_ACCESS_LOGS` | `/var/log/nginx/access.log` | Comma-separated logs to tail |
+| `SYSMONITOR_STRICT_ACTIONS` | `true` | Blocklist changes and quarantine need the API token even from the LAN (see the blocker API) |
 | `SYSMONITOR_THREAT_ALLOWLIST` | empty | Extra IPs/CIDRs never flagged blockable |
 | `SYSMONITOR_ALERT_NTFY_TOKEN` | empty | Bearer token for an authenticated ntfy server |
 
@@ -105,7 +106,14 @@ then `manual`, then `auto` only once the false-positive record is clean.
   multicast, reserved and documentation ranges are refused by both the app
   **and** the helper (independent validation).
 - `/etc/sys-monitor/block-allowlist` (helper) and `SYSMONITOR_THREAT_ALLOWLIST`
-  (app) add extra never-block addresses.
+  (app) add extra never-block addresses. **Fill them in before leaving `dry-run`**:
+  your own public address(es) and the DNS resolvers you use. sys-monitor logs a
+  warning at startup when the mode is `manual`/`auto` and both are empty. If a web
+  server sits behind a proxy or CDN, the address in its access log is the
+  proxy's, so allowlist the proxy ranges (or log the real client address).
+- The root helper ignores environment overrides (`SYSMON_BLOCK_STATE`,
+  `SYSMON_BLOCK_ALLOWLIST`, `SYSMON_BLOCK_SELF`, `SYSMON_QUARANTINE_STATE`) when
+  it runs as root; they exist for the test suite only.
 - An IP that has ever logged in successfully is never auto-blocked (protects your
   own remote address); only an explicit operator `force` overrides that.
 - Escalating TTLs per repeat offender: 1h, 24h, then 7d. Operator removals count as
@@ -148,8 +156,16 @@ reboot from `/var/lib/sysmon-block/state.json`.
 | `POST /api/blocks/flush` | unblock everything |
 | `POST /api/blocks/approve?ip=&exp=&sig=` | signed one-tap approval |
 
-Mutations honor `SYSMONITOR_TOKEN` and, if set, `SYSMONITOR_CONFIG_TOKEN`
-(`X-Config-Token`).
+**Mutations always need the API token, even from the LAN.** The
+`SYSMONITOR_LAN_NO_AUTH` bypass does not apply to `POST /api/blocks`,
+`DELETE /api/blocks/<ip>`, `POST /api/blocks/flush` and the quarantine
+mutations (`SYSMONITOR_STRICT_ACTIONS`, default `true`): they require the
+`SYSMONITOR_TOKEN` bearer from every client, and with no token configured they
+are available to loopback clients only. If `SYSMONITOR_CONFIG_TOKEN` is set it
+is required too (`X-Config-Token`). The dashboard asks for the token(s) once per
+browser session when one of these buttons is used. Read-only endpoints keep the
+normal LAN rules. Set `SYSMONITOR_STRICT_ACTIONS=false` to get the previous
+behaviour (not recommended).
 
 ## Outbound quarantine (manual only)
 
@@ -172,6 +188,12 @@ Safety:
 - **Reboot clears it:** the table is not persistent and `init` never restores it.
 - A critical alert is sent first (a remote webhook won't deliver once engaged;
   local ntfy will).
+- **What stops working while it is on:** everything that needs the internet from
+  this host *or its containers*: package and image pulls, CI runners fetching
+  actions or dependencies, remote webhooks and notifications, app-store updates.
+  LAN, loopback and DNS to a LAN resolver keep working. Note the SSH exception is by
+  source port (`tcp sport 22/2222`), so any packet sourced from those ports may
+  leave to any destination, not only replies on an established connection.
 - Release any time: dashboard link, `DELETE /api/quarantine`, or
   `sudo sysmon-block quarantine off`.
 
@@ -181,6 +203,6 @@ Safety:
 | `POST /api/quarantine` | `{confirm: "QUARANTINE", minutes?}` |
 | `DELETE /api/quarantine` | release |
 
-Note: on a host with `SYSMONITOR_LAN_NO_AUTH=true` any LAN client can call these
-mutations, as with service control. Set `SYSMONITOR_CONFIG_TOKEN` as a second gate
-if that matters (API callers send it as `X-Config-Token`; the dashboard UI does not).
+Starting or releasing a quarantine uses the strict auth described under the blocker
+API (token required from every client; the typed `QUARANTINE` confirmation guards
+against accidents, it is not authentication).

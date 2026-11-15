@@ -3,6 +3,8 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -471,3 +473,63 @@ def test_init_does_not_restore_quarantine_after_reboot(hstate, qstate):
 
     helper.cmd_init(run=NoTable(), now=lambda: T0)
     assert not helper.Q_STATE.exists()
+
+
+# ── approval key file and allowlist count ──────────────────────────────────
+
+
+def test_secret_file_is_created_0600_even_with_a_wide_umask(tmp_path):
+    path = tmp_path / "state" / "approval.key"
+    old = os.umask(0)
+    try:
+        key = ib.load_or_create_secret(path)
+    finally:
+        os.umask(old)
+    assert len(key) == 32 and stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert ib.load_or_create_secret(path) == key  # stable on the next start
+    assert list(path.parent.glob("*.tmp")) == []  # no temp file left behind
+
+
+def test_too_short_secret_file_is_replaced(tmp_path):
+    path = tmp_path / "approval.key"
+    path.write_bytes(b"short")
+    key = ib.load_or_create_secret(path)
+    assert len(key) == 32 and path.read_bytes() == key
+
+
+def test_count_allowlist_entries(tmp_path):
+    f = tmp_path / "allow"
+    f.write_text("# comment\n\n203.0.113.0/24  # office\nnot-a-network\n8.8.4.4\n")
+    assert ib.count_allowlist_entries([], f) == 2  # invalid line ignored
+    assert ib.count_allowlist_entries(["x"], f) == 3  # plus the in-process list
+    assert ib.count_allowlist_entries([], tmp_path / "missing") == 0
+
+
+# ── helper: no environment overrides when running as root ──────────────────
+
+_OVERRIDES = {
+    "SYSMON_BLOCK_STATE": "/tmp/HARNESS_state.json",
+    "SYSMON_BLOCK_ALLOWLIST": "/tmp/HARNESS_allow",
+    "SYSMON_BLOCK_SELF": "/tmp/HARNESS_evil",
+    "SYSMON_QUARANTINE_STATE": "/tmp/HARNESS_q.json",
+}
+
+
+def test_helper_ignores_environment_overrides_as_root(monkeypatch):
+    for name, value in _OVERRIDES.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    mod = _load_helper()
+    assert str(mod.STATE_FILE) == "/var/lib/sysmon-block/state.json"
+    assert str(mod.ALLOWLIST_FILE) == "/etc/sys-monitor/block-allowlist"
+    assert str(mod.Q_STATE) == "/var/lib/sysmon-block/quarantine.json"
+    assert mod.SELF == "/usr/local/sbin/sysmon-block"  # exec'd as root by systemd-run
+
+
+def test_helper_still_honours_overrides_for_the_test_suite(monkeypatch):
+    for name, value in _OVERRIDES.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    mod = _load_helper()
+    assert str(mod.STATE_FILE) == _OVERRIDES["SYSMON_BLOCK_STATE"]
+    assert mod.SELF == _OVERRIDES["SYSMON_BLOCK_SELF"]

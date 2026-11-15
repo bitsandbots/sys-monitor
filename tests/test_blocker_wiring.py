@@ -221,3 +221,108 @@ def test_quarantine_status_when_helper_missing(blk, node_client):
     sys_monitor._blocker._run = boom
     data = node_client.get("/api/quarantine").get_json()
     assert data["available"] is False and data["active"] is False
+
+
+# ── strict auth for dangerous actions ──────────────────────────────────────
+
+LAN_CLIENT = {"REMOTE_ADDR": "192.168.1.50"}
+BEARER = {"Authorization": "Bearer HARNESS_tok"}
+
+
+def _lan(client, method, url, **kw):
+    return getattr(client, method)(url, environ_overrides=LAN_CLIENT, **kw)
+
+
+@pytest.fixture
+def strict(blk):
+    sys_monitor._auth_failures.clear()
+    sys_monitor.CONFIG.update(
+        auth_token="HARNESS_tok", lan_no_auth=True, strict_actions=True
+    )
+    yield blk
+    sys_monitor._auth_failures.clear()
+
+
+def test_strict_actions_ignore_the_lan_bypass(strict, node_client):
+    assert _lan(node_client, "post", "/api/blocks", json={"ip": PUB}).status_code == 401
+    assert _lan(node_client, "delete", f"/api/blocks/{PUB}").status_code == 401
+    assert _lan(node_client, "post", "/api/blocks/flush").status_code == 401
+    quarantine = {"json": {"confirm": "QUARANTINE"}}
+    assert _lan(node_client, "post", "/api/quarantine", **quarantine).status_code == 401
+    assert _lan(node_client, "delete", "/api/quarantine").status_code == 401
+    assert strict.fake.calls == []  # nothing reached the helper
+
+
+def test_strict_actions_work_with_the_token(strict, node_client):
+    r = _lan(node_client, "post", "/api/blocks", json={"ip": PUB}, headers=BEARER)
+    assert r.status_code == 200
+    assert ["add", PUB, "3600"] in strict.fake.calls
+    assert (
+        _lan(node_client, "delete", f"/api/blocks/{PUB}", headers=BEARER).status_code
+        == 200
+    )
+
+
+def test_strict_actions_wrong_token_is_rejected_and_locks_out(strict, node_client):
+    bad = {"Authorization": "Bearer nope"}
+    for _ in range(sys_monitor._AUTH_FAIL_MAX):
+        assert (
+            _lan(node_client, "post", "/api/blocks/flush", headers=bad).status_code
+            == 401
+        )
+    assert (
+        _lan(node_client, "post", "/api/blocks/flush", headers=bad).status_code == 429
+    )
+
+
+def test_read_only_status_endpoints_keep_the_lan_bypass(strict, node_client):
+    assert _lan(node_client, "get", "/api/blocks").status_code == 200
+    assert _lan(node_client, "get", "/api/quarantine").status_code == 200
+
+
+def test_strict_actions_without_a_token_are_loopback_only(strict, node_client):
+    sys_monitor.CONFIG["auth_token"] = ""
+    refused = _lan(node_client, "post", "/api/blocks", json={"ip": PUB})
+    assert refused.status_code == 403
+    assert (
+        node_client.post("/api/blocks", json={"ip": PUB}).status_code == 200
+    )  # loopback
+
+
+def test_strict_actions_can_be_switched_off(strict, node_client):
+    sys_monitor.CONFIG["strict_actions"] = False
+    assert _lan(node_client, "post", "/api/blocks", json={"ip": PUB}).status_code == 200
+
+
+# ── allowlist warning ──────────────────────────────────────────────────────
+
+
+def test_blocker_init_warns_when_enabled_with_an_empty_allowlist(monkeypatch, tmp_path):
+    logs = []
+    monkeypatch.setattr(sys_monitor, "log_event", lambda m, lvl="info": logs.append(m))
+    monkeypatch.setattr(ib.BlockManager, "init_helper", lambda self: None)
+    monkeypatch.setattr(ib, "HELPER_ALLOWLIST_FILE", tmp_path / "missing")
+    sys_monitor.CONFIG.update(
+        history_db=str(tmp_path / "HARNESS_m.db"),
+        threat_allowlist="",
+        block_mode="manual",
+    )
+    engine = SimpleNamespace(baseline=SimpleNamespace(ips=set()))
+    try:
+        sys_monitor._blocker_init(engine, tmp_path)
+        assert any("EMPTY allowlist" in m for m in logs)
+
+        allow = tmp_path / "allow"
+        allow.write_text("# mine\n203.0.113.0/24  # office\n")
+        monkeypatch.setattr(ib, "HELPER_ALLOWLIST_FILE", allow)
+        logs.clear()
+        sys_monitor._blocker_init(engine, tmp_path)
+        assert not any("EMPTY allowlist" in m for m in logs)
+
+        sys_monitor.CONFIG["block_mode"] = "dry-run"  # nothing is enforced: no warning
+        monkeypatch.setattr(ib, "HELPER_ALLOWLIST_FILE", tmp_path / "missing")
+        logs.clear()
+        sys_monitor._blocker_init(engine, tmp_path)
+        assert not any("EMPTY allowlist" in m for m in logs)
+    finally:
+        sys_monitor._blocker = None
