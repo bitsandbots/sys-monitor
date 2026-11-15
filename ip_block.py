@@ -30,6 +30,9 @@ MODES = ("off", "dry-run", "manual", "auto")
 AUTO_DETECTORS = frozenset({"brute_force", "password_spray", "web_scan"})
 TTL_LADDER = (3600, 86400, 604800)  # 1h, 24h, 7d for repeat offenders
 APPROVAL_TTL = 3600
+QUARANTINE_DEFAULT_MIN = 15
+QUARANTINE_MAX_MIN = 60
+QUARANTINE_CONFIRM = "QUARANTINE"
 _DRYRUN_COOLDOWN = 600.0
 
 
@@ -391,3 +394,40 @@ class BlockManager:
             return {"action": "would_block"}
         finally:
             conn.close()
+
+    # -- outbound quarantine (manual only) ----------------------------------
+
+    def quarantine_status(self) -> dict:
+        """Current quarantine state from the helper (never raises)."""
+        try:
+            out = self._helper("quarantine", "status")
+        except BlockRefused as exc:
+            return {"available": False, "active": False, "error": str(exc)}
+        return {
+            "available": True,
+            "active": bool(out.get("active")),
+            "until": out.get("until"),
+            "remaining": out.get("remaining"),
+        }
+
+    def quarantine_start(self, minutes: int | None = None, by: str = "manual") -> dict:
+        """Cut outbound internet (LAN + SSH kept) for a bounded time.
+
+        The helper arms a root-owned auto-revert timer first and refuses to
+        engage without it. There is intentionally no automatic caller.
+
+        Raises:
+            BlockRefused: invalid duration, or the helper refused.
+        """
+        minutes = QUARANTINE_DEFAULT_MIN if minutes is None else int(minutes)
+        if not 1 <= minutes <= QUARANTINE_MAX_MIN:
+            raise BlockRefused(f"minutes must be between 1 and {QUARANTINE_MAX_MIN}")
+        out = self._helper("quarantine", "on", str(minutes * 60))
+        self._log(f"QUARANTINE engaged for {minutes} min by {by}", "error")
+        return {"active": True, "until": out.get("until"), "minutes": minutes}
+
+    def quarantine_release(self, by: str = "manual") -> dict:
+        """Restore internet immediately."""
+        self._helper("quarantine", "off")
+        self._log(f"QUARANTINE released by {by}", "success")
+        return {"active": False}

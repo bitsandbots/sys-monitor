@@ -5,4 +5,7 @@ sys-monitor ALL=(root) NOPASSWD: /usr/local/sbin/sysmon-block init, \
     /usr/local/sbin/sysmon-block add *, \
     /usr/local/sbin/sysmon-block del *, \
     /usr/local/sbin/sysmon-block list, \
-    /usr/local/sbin/sysmon-block flush
+    /usr/local/sbin/sysmon-block flush, \
+    /usr/local/sbin/sysmon-block quarantine on *, \
+    /usr/local/sbin/sysmon-block quarantine off, \
+    /usr/local/sbin/sysmon-block quarantine status

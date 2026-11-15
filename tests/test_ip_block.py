@@ -379,3 +379,95 @@ def test_approval_roundtrip_and_tamper(tmp_path):
     assert not ib.verify_approval(key, PUB, exp + 1, sig, now=T0)  # altered expiry
     assert not ib.verify_approval(key, PUB, exp, sig, now=exp + 1)  # expired
     assert not ib.verify_approval(key, PUB, exp, "", now=T0)
+
+
+# ── quarantine helper ──────────────────────────────────────────────────────
+
+
+class FakeQ:
+    """Fake run() for quarantine: tracks which commands ran, in order."""
+
+    def __init__(self, fail_arm=False, fail_nft=False):
+        self.calls, self.fail_arm, self.fail_nft = [], fail_arm, fail_nft
+
+    def __call__(self, argv, input=None, capture_output=True, text=True, timeout=0):
+        self.calls.append(argv[:3] if argv[0] != "nft" else argv)
+        rc = 0
+        if argv[0] == "systemd-run" and self.fail_arm:
+            rc = 1
+        if argv[:2] == ["nft", "-f"] and self.fail_nft:
+            rc = 1
+        return SimpleNamespace(returncode=rc, stdout="", stderr="bad" if rc else "")
+
+
+@pytest.fixture
+def qstate(tmp_path, monkeypatch):
+    monkeypatch.setattr(helper, "Q_STATE", tmp_path / "q" / "quarantine.json")
+    return tmp_path
+
+
+@pytest.mark.parametrize("secs", ["0", "59", "3601", "abc", "-1", ""])
+def test_quarantine_duration_bounds(qstate, secs):
+    run = FakeQ()
+    with pytest.raises(helper.Refused):
+        helper.cmd_quarantine_on(secs, run=run)
+    assert run.calls == []  # nothing touched
+
+
+def test_quarantine_arms_timer_before_firewall(qstate):
+    run = FakeQ()
+    out = helper.cmd_quarantine_on("900", run=run, now=lambda: T0)
+    kinds = [c[0] for c in run.calls]
+    assert kinds.index("systemd-run") < kinds.index("nft")
+    assert out["until"] == T0 + 900 and helper.Q_STATE.exists()
+
+
+def test_quarantine_fails_closed_without_timer(qstate):
+    run = FakeQ(fail_arm=True)
+    with pytest.raises(helper.NftError, match="refusing to quarantine"):
+        helper.cmd_quarantine_on("900", run=run)
+    assert not any(c[0] == "nft" and c[1] == "-f" for c in run.calls)
+    assert not helper.Q_STATE.exists()
+
+
+def test_quarantine_ruleset_failure_disarms_timer(qstate):
+    run = FakeQ(fail_nft=True)
+    with pytest.raises(helper.NftError):
+        helper.cmd_quarantine_on("900", run=run)
+    assert run.calls[-1][:2] == ["systemctl", "stop"]
+    assert not helper.Q_STATE.exists()
+
+
+def test_quarantine_off_clears_state(qstate):
+    helper._q_state_write(T0 + 100)
+    run = FakeQ()
+    assert helper.cmd_quarantine_off(run=run)["active"] is False
+    assert not helper.Q_STATE.exists()
+
+
+def test_quarantine_ruleset_keeps_lan_loopback_and_ssh():
+    rs = helper.Q_RULESET
+    for needle in (
+        "192.168.0.0/16",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        'oifname "lo" accept',
+        "tcp sport { 22, 2222 } accept",
+        "chain forward",
+        "counter drop",
+    ):
+        assert needle in rs
+
+
+def test_init_does_not_restore_quarantine_after_reboot(hstate, qstate):
+    helper._q_state_write(T0 + 9999)  # stale: table is gone after a reboot
+
+    class NoTable(FakeNft):
+        def __call__(self, argv, **kw):
+            res = super().__call__(argv, **kw)
+            if argv[:4] == ["nft", "list", "table", "inet"] and argv[4] == "sysmon_q":
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return res
+
+    helper.cmd_init(run=NoTable(), now=lambda: T0)
+    assert not helper.Q_STATE.exists()

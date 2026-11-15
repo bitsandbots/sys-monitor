@@ -2668,6 +2668,54 @@ def api_blocks_flush():
         return jsonify({"success": False, "error": str(exc)}), 400
 
 
+@app.route("/api/quarantine")
+@require_auth
+def api_quarantine():
+    """Outbound-quarantine state: {available, active, until, remaining}."""
+    if not (_threat_enabled() and _blocker is not None):
+        return jsonify({"available": False, "active": False})
+    return jsonify(_blocker.quarantine_status())
+
+
+@app.route("/api/quarantine", methods=["POST"])
+@require_auth
+@require_config_auth
+def api_quarantine_start():
+    """Cut outbound internet: JSON {confirm: "QUARANTINE", minutes?: 1-60}.
+
+    Manual only. LAN, loopback and SSH replies stay up; auto-reverts.
+    """
+    mgr = _blocker_or_503()
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != _ib.QUARANTINE_CONFIRM:
+        return (
+            jsonify({"success": False, "error": f'send {{"confirm": "{_ib.QUARANTINE_CONFIRM}"}}'}),
+            400,
+        )
+    try:
+        minutes = int(body["minutes"]) if body.get("minutes") else None
+        # Notify first: the alert path (local ntfy) still works, a remote webhook won't.
+        _send_alert(
+            "quarantine", "quarantine", "critical",
+            f"Outbound internet quarantine requested from {_client_ip()}",
+        )
+        return jsonify({"success": True, **mgr.quarantine_start(minutes, by=f"api:{_client_ip()}")})
+    except (ValueError, _ib.BlockRefused) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/quarantine", methods=["DELETE"])
+@require_auth
+@require_config_auth
+def api_quarantine_release():
+    """Restore outbound internet immediately."""
+    mgr = _blocker_or_503()
+    try:
+        return jsonify({"success": True, **mgr.quarantine_release(by=f"api:{_client_ip()}")})
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
 @app.route("/api/blocks/approve", methods=["POST"])
 def api_blocks_approve():
     """One-tap approval from a notification: signed, single-IP, expiring.
