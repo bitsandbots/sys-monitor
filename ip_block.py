@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
+import os
 import secrets
 import sqlite3
 import subprocess
@@ -74,7 +76,11 @@ def open_db(path: str) -> sqlite3.Connection:
 
 
 def load_or_create_secret(path: Path) -> bytes:
-    """Return the HMAC key, creating a random 0600 key file on first use."""
+    """Return the HMAC key, creating a random key file readable only by us.
+
+    The file is created with mode 0600 from its first byte (no write-then-chmod
+    window) in a temp file and moved into place atomically.
+    """
     try:
         data = path.read_bytes()
         if len(data) >= 16:
@@ -83,9 +89,45 @@ def load_or_create_secret(path: Path) -> bytes:
         pass
     key = secrets.token_bytes(32)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(key)
-    path.chmod(0o600)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(key)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return key
+
+
+# The root helper's allowlist (see contrib/sysmon-block); readable by the service.
+HELPER_ALLOWLIST_FILE = Path("/etc/sys-monitor/block-allowlist")
+
+
+def count_allowlist_entries(in_process: list, path: Path | None = None) -> int:
+    """Entries in effect: the in-process allowlist plus the helper's file.
+
+    Used to warn when blocking is enabled with nothing that can never be blocked.
+    """
+    count = len(in_process)
+    try:
+        lines = (path or HELPER_ALLOWLIST_FILE).read_text().splitlines()
+    except OSError:
+        return count
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            ipaddress.ip_network(line, strict=False)
+        except ValueError:
+            continue
+        count += 1
+    return count
 
 
 def sign_approval(key: bytes, ip: str, exp: int) -> str:

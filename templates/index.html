@@ -841,6 +841,34 @@ function barHTML(label, value, max, detail, color) {
 // ════════════════════════════════════════════════════════════════════════
 // API Layer
 // ════════════════════════════════════════════════════════════════════════
+// Dangerous actions (quarantine, unblock) are refused without the API token even from the
+// LAN (SYSMONITOR_STRICT_ACTIONS). On a 401 ask for the token once per browser session and
+// retry; a config token (X-Config-Token) is asked for only if the server says it needs one.
+function tokenGet(k) { try { return sessionStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function tokenSet(k, v) { try { v ? sessionStorage.setItem(k, v) : sessionStorage.removeItem(k); } catch (e) {} }
+async function actionFetch(url, opts) {
+  opts = opts || {};
+  const send = () => {
+    const h = Object.assign({}, opts.headers || {});
+    if (tokenGet('sysmon_token')) h['Authorization'] = 'Bearer ' + tokenGet('sysmon_token');
+    if (tokenGet('sysmon_config_token')) h['X-Config-Token'] = tokenGet('sysmon_config_token');
+    return fetch(url, Object.assign({}, opts, { headers: h }));
+  };
+  let r = await send();
+  for (let attempt = 0; attempt < 2 && r.status === 401; attempt++) {
+    const needsConfig = (await r.clone().text()).toLowerCase().includes('config token');
+    const key = needsConfig ? 'sysmon_config_token' : 'sysmon_token';
+    const entered = prompt(needsConfig
+      ? 'This action needs the config token (SYSMONITOR_CONFIG_TOKEN):'
+      : 'This action needs the API token (SYSMONITOR_TOKEN):');
+    if (!entered) return r;
+    tokenSet(key, entered);
+    r = await send();
+    if (r.status === 401) tokenSet(key, '');
+  }
+  return r;
+}
+
 async function api(path) {
   try {
     const r = await fetch('/api/' + path);
@@ -1233,21 +1261,21 @@ async function refreshThreats() {
     const mins = prompt('Cut this host\'s outbound internet for how many minutes (1-60)? LAN and SSH stay up and it auto-reverts.', '15');
     if (!mins) return;
     if (prompt('Type QUARANTINE to confirm') !== 'QUARANTINE') return;
-    const r = await fetch('/api/quarantine', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const r = await actionFetch('/api/quarantine', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: 'QUARANTINE', minutes: parseInt(mins, 10) }) });
     if (!r.ok) alert('Quarantine failed: ' + ((await r.json().catch(() => ({}))).error || r.statusText));
     refreshThreats();
   });
   if (qr) qr.addEventListener('click', async ev => {
     ev.preventDefault();
-    await fetch('/api/quarantine', { method: 'DELETE' });
+    await actionFetch('/api/quarantine', { method: 'DELETE' });
     refreshThreats();
   });
   $('threat-body').querySelectorAll('[data-unblock]').forEach(a => a.addEventListener('click', async ev => {
     ev.preventDefault();
     const ip = a.getAttribute('data-unblock');
     if (!confirm('Unblock ' + ip + '?')) return;
-    const r = await fetch('/api/blocks/' + encodeURIComponent(ip), { method: 'DELETE' });
+    const r = await actionFetch('/api/blocks/' + encodeURIComponent(ip), { method: 'DELETE' });
     if (!r.ok) alert('Unblock failed: ' + r.statusText);
     refreshThreats();
   }));

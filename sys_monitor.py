@@ -62,6 +62,9 @@ CONFIG = {
     # firewall in front of the port). Off by default, so a token is required
     # from every client unless SYSMONITOR_LAN_NO_AUTH=true.
     "lan_no_auth": os.getenv("SYSMONITOR_LAN_NO_AUTH", "false").lower() == "true",
+    # Dangerous actions (blocklist changes, quarantine) never take the LAN bypass:
+    # they need the bearer token from every client (see require_strict_auth).
+    "strict_actions": os.getenv("SYSMONITOR_STRICT_ACTIONS", "true").lower() == "true",
     "services": [
         s.strip()
         for s in os.getenv(
@@ -300,6 +303,35 @@ def _auth_record_failure(ip: str) -> None:
     _threat_push_login_fail(ip)
 
 
+def _verify_bearer(token: str, ip: str) -> None:
+    """Abort 429/401 unless the request carries the bearer token.
+
+    Constant-time compare, per-IP lockout, failures logged.
+    """
+    if _auth_locked_out(ip):
+        log_event(f"Auth lockout: {ip}", "warning")
+        abort(429, description="Too many failed attempts")
+    supplied = request.headers.get("Authorization", "")
+    expected = f"Bearer {token}"
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        _auth_record_failure(ip)
+        log_event(
+            f"Auth failed: {request.method} {request.path} from {ip}",
+            "warning",
+        )
+        abort(401, description="Unauthorized")
+
+
+def _is_loopback_client(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback
+
+
 def require_auth(f):
     """Bearer-token authentication.
 
@@ -316,18 +348,36 @@ def require_auth(f):
         if token and CONFIG["lan_no_auth"] and _is_lan_client(ip):
             return f(*args, **kwargs)
         if token:
-            if _auth_locked_out(ip):
-                log_event(f"Auth lockout: {ip}", "warning")
-                abort(429, description="Too many failed attempts")
-            supplied = request.headers.get("Authorization", "")
-            expected = f"Bearer {token}"
-            if not hmac.compare_digest(supplied.encode(), expected.encode()):
-                _auth_record_failure(ip)
-                log_event(
-                    f"Auth failed: {request.method} {request.path} from {ip}",
-                    "warning",
-                )
-                abort(401, description="Unauthorized")
+            _verify_bearer(token, ip)
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+def require_strict_auth(f):
+    """Bearer token from EVERY client, for actions that can hurt (blocklist
+    changes, quarantine): the SYSMONITOR_LAN_NO_AUTH bypass does not apply.
+
+    With no token configured the action is available to loopback clients only,
+    so an unauthenticated LAN device can never trigger it. Set
+    SYSMONITOR_STRICT_ACTIONS=false to fall back to plain ``require_auth``.
+    The dashboard asks for the token once per browser session (sessionStorage).
+    """
+    legacy = require_auth(f)
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not CONFIG["strict_actions"]:
+            return legacy(*args, **kwargs)
+        token = CONFIG["auth_token"]
+        ip = _client_ip()
+        if token:
+            _verify_bearer(token, ip)
+        elif not _is_loopback_client(ip):
+            abort(
+                403,
+                description="This action needs SYSMONITOR_TOKEN when used from the network",
+            )
         return f(*args, **kwargs)
 
     return decorated
@@ -2323,6 +2373,16 @@ def _blocker_init(engine, state_dir) -> None:
         max_per_hour=CONFIG["block_max_per_hour"],
         allowlist=_td.parse_networks(CONFIG["threat_allowlist"]),
     )
+    if (
+        mode in ("manual", "auto")
+        and _ib.count_allowlist_entries(settings.allowlist) == 0
+    ):
+        log_event(
+            f"IP blocker is in '{mode}' mode with an EMPTY allowlist: add your own "
+            "public address(es) and DNS resolvers to /etc/sys-monitor/block-allowlist "
+            "(or SYSMONITOR_THREAT_ALLOWLIST) so they can never be blocked",
+            "warning",
+        )
     _blocker = _ib.BlockManager(
         CONFIG["history_db"],
         settings,
@@ -2624,7 +2684,7 @@ def api_blocks():
 
 
 @app.route("/api/blocks", methods=["POST"])
-@require_auth
+@require_strict_auth
 @require_config_auth
 def api_blocks_add():
     """Operator block: JSON {ip, reason?, ttl?, force?}. Public IPs only."""
@@ -2645,7 +2705,7 @@ def api_blocks_add():
 
 
 @app.route("/api/blocks/<path:ip>", methods=["DELETE"])
-@require_auth
+@require_strict_auth
 @require_config_auth
 def api_blocks_remove(ip):
     """Unblock one address (allowed in every mode so blocks can always be undone)."""
@@ -2657,7 +2717,7 @@ def api_blocks_remove(ip):
 
 
 @app.route("/api/blocks/flush", methods=["POST"])
-@require_auth
+@require_strict_auth
 @require_config_auth
 def api_blocks_flush():
     """Remove every block."""
@@ -2678,7 +2738,7 @@ def api_quarantine():
 
 
 @app.route("/api/quarantine", methods=["POST"])
-@require_auth
+@require_strict_auth
 @require_config_auth
 def api_quarantine_start():
     """Cut outbound internet: JSON {confirm: "QUARANTINE", minutes?: 1-60}.
@@ -2705,7 +2765,7 @@ def api_quarantine_start():
 
 
 @app.route("/api/quarantine", methods=["DELETE"])
-@require_auth
+@require_strict_auth
 @require_config_auth
 def api_quarantine_release():
     """Restore outbound internet immediately."""
