@@ -42,6 +42,9 @@ Built for [CoreConduit Consulting Services](https://coreconduit.com) infrastruct
 - Samples CPU, temperature, memory, network, disk and GPU every 60s into SQLite (7-day retention), with a History card on the Overview tab. Auto-enabled under the shipped systemd unit (`StateDirectory=sys-monitor`).
 - **NVIDIA GPU hosts:** the shipped unit's `PrivateDevices=true` hides the GPU. Install `contrib/sys-monitor-gpu.conf` as a drop-in (instructions inside the file) for `/api/gpu`.
 
+### Discovery
+- The Fleet Hub finds nodes by `/24` scan **or mDNS** (`_sysmonitor._tcp`, Avahi). `install.sh` advertises each node automatically when `avahi-daemon` is present; the hub needs `avahi-utils` for mDNS lookups. See `docs/api.md` (Discovery).
+
 ### Service Control
 - View systemd service status (active/enabled state)
 - Start, stop, restart services

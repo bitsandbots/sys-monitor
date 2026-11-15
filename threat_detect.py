@@ -130,43 +130,70 @@ def is_blockable_ip(ip: str, allowlist: list | None = None) -> bool:
 # ── Parsers ────────────────────────────────────────────────────────────────
 
 _RAW_MAX = 300
+# sshd log lines carry attacker-controlled text: the *username* of a failed login
+# (spaces allowed, up to 100 chars) sits in the middle of the message, e.g.
+#   Failed password for invalid user x from 8.8.8.8 port 22 ssh2 from 6.6.6.6 port 51022 ssh2
+# where the whole "x from 8.8.8.8 port 22 ssh2" is the username. Only the *tail* of a
+# line ("from <ip> port <n> [ssh2]", written by sshd itself) can be trusted, so every
+# pattern is anchored at both ends and the free-text username is matched greedily so
+# the LAST "from <ip> port <n>" wins. Lines that do not fit exactly are dropped: a
+# missed event is better than blaming (and, with the blocker on, blocking) an innocent
+# address. For "Accepted" lines the account must already exist, so the user is a single
+# token and trailing key/certificate text can never be mistaken for the source.
+# What sshd itself appends after the source address on failure lines. The optional
+# key part ("ssh2: RSA SHA256:<fp>" on failed publickey) is two space-free tokens, so
+# it cannot smuggle in a second "from <ip> port <n>".
+_FAIL_TAIL = (
+    r" port \d+(?: ssh\d)?(?:: [A-Za-z0-9@._+-]+ [A-Za-z0-9]+:\S+)?(?: \[preauth\])?"
+)
 _SSH_PATTERNS = [
     (
         "login_fail",
         re.compile(
-            r"Failed (?:password|publickey|keyboard-interactive/pam) for "
-            r"(?:invalid user )?(?P<user>\S+) from (?P<ip>\S+) port"
-        ),
-    ),
-    ("login_fail", re.compile(r"Invalid user (?P<user>\S*) from (?P<ip>\S+)")),
-    (
-        "login_fail",
-        re.compile(
-            r"(?:Connection closed by|Disconnected from) authenticating user "
-            r"(?P<user>\S+) (?P<ip>\S+) port"
+            r"^Failed (?:password|publickey|keyboard-interactive/pam) for "
+            r"(?:invalid user )?(?P<user>.+) from (?P<ip>\S+)" + _FAIL_TAIL + r"$"
         ),
     ),
     (
         "login_fail",
         re.compile(
-            r"maximum authentication attempts exceeded for "
-            r"(?:invalid user )?(?P<user>\S+) from (?P<ip>\S+) port"
+            r"^Invalid user (?P<user>.*) from (?P<ip>\S+)(?: port \d+)?(?: \[preauth\])?$"
+        ),
+    ),
+    (
+        "login_fail",
+        re.compile(
+            r"^(?:Connection closed by|Disconnected from) authenticating user "
+            r"(?P<user>.+) (?P<ip>\S+) port \d+(?: \[preauth\])?$"
+        ),
+    ),
+    (
+        "login_fail",
+        re.compile(
+            r"^maximum authentication attempts exceeded for "
+            r"(?:invalid user )?(?P<user>.+) from (?P<ip>\S+)" + _FAIL_TAIL + r"$"
         ),
     ),
     (
         "login_ok",
         re.compile(
-            r"Accepted (?:password|publickey|keyboard-interactive/pam|"
-            r"hostbased|gssapi\S*) for (?P<user>\S+) from (?P<ip>\S+) port"
+            r"^Accepted (?:password|publickey|keyboard-interactive/pam|"
+            r"hostbased|gssapi\S*) for (?P<user>\S+) from (?P<ip>\S+) port \d+"
+            r"(?: ssh\d)?(?::.*)?$"
         ),
     ),
 ]
 
 
 def parse_sshd_message(message: str, ts: float) -> LogEvent | None:
-    """Parse one sshd log message into a LogEvent, or None if irrelevant."""
+    """Parse one sshd log message into a LogEvent, or None if irrelevant.
+
+    The source address is taken only from the trailing ``from <ip> port <n>`` that
+    sshd writes itself, never from text inside an attacker-chosen username.
+    """
+    message = message.strip()
     for kind, pattern in _SSH_PATTERNS:
-        m = pattern.search(message)
+        m = pattern.match(message)
         if m:
             ip = normalize_ip(m.group("ip"))
             if not ip:
