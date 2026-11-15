@@ -122,6 +122,87 @@ def test_parse_access_line_garbage():
     assert td.parse_access_line("not a log line") is None
 
 
+# ── sshd log injection ─────────────────────────────────────────────────────
+# The username of a failed login is attacker-controlled free text in the middle of
+# the sshd message. It must never be able to redirect attribution to another address
+# (with the blocker on, that would be a remote "block anyone" primitive).
+
+ATTACKER = PUB2  # the real source of every line below
+VICTIM = PUB  # the address the attacker wants blamed
+
+INJECTED_USERNAMES = [
+    f"x from {VICTIM} port 22 ssh2",
+    f"root from {VICTIM} port 22",
+    f"a port 1 ssh2 from {VICTIM} port 9 ssh2",
+    f"{VICTIM}",
+    f"x from {VICTIM}",
+    "x from 2001:4860:4860::8888 port 22 ssh2",
+]
+FAILURE_LINES = [
+    "Failed password for invalid user {u} from {ip} port 51022 ssh2",
+    "Failed password for {u} from {ip} port 51022 ssh2",
+    "Failed publickey for {u} from {ip} port 51022 ssh2: RSA SHA256:abc123+/=",
+    "Invalid user {u} from {ip} port 51022",
+    "Connection closed by authenticating user {u} {ip} port 51022 [preauth]",
+    "Disconnected from authenticating user {u} {ip} port 51022 [preauth]",
+    "maximum authentication attempts exceeded for invalid user {u} from {ip} "
+    "port 51022 ssh2 [preauth]",
+]
+
+
+@pytest.mark.parametrize("template", FAILURE_LINES)
+@pytest.mark.parametrize("user", INJECTED_USERNAMES)
+def test_injected_username_cannot_redirect_attribution(template, user):
+    ev = td.parse_sshd_message(template.format(u=user, ip=ATTACKER), T0)
+    assert ev is not None
+    assert (ev.kind, ev.ip) == ("login_fail", ATTACKER)
+
+
+@pytest.mark.parametrize("template", FAILURE_LINES)
+def test_honest_failure_lines_still_parse(template):
+    ev = td.parse_sshd_message(template.format(u="admin", ip=ATTACKER), T0)
+    assert (ev.kind, ev.user, ev.ip) == ("login_fail", "admin", ATTACKER)
+
+
+def test_failed_publickey_tail_is_accepted():
+    line = "Failed publickey for root from 1.1.1.1 port 22 ssh2: ED25519 SHA256:Zx/9+=a"
+    assert td.parse_sshd_message(line, T0).ip == PUB2
+
+
+def test_legacy_invalid_user_line_without_port_still_parses():
+    ev = td.parse_sshd_message("Invalid user bob from 1.1.1.1", T0)
+    assert (ev.user, ev.ip) == ("bob", PUB2)
+
+
+def test_accepted_line_cannot_be_redirected_through_certificate_text():
+    line = (
+        "Accepted publickey for corecond from 192.168.0.169 port 5555 ssh2: "
+        f"RSA-CERT SHA256:x ID bob from {VICTIM} port 22 ssh2 (serial 1) CA RSA SHA256:y"
+    )
+    ev = td.parse_sshd_message(line, T0)
+    assert (ev.kind, ev.user, ev.ip) == ("login_ok", "corecond", "192.168.0.169")
+
+
+def test_failure_line_without_a_port_is_dropped():
+    # sshd always logs the port; a line without one is not trustworthy enough to count
+    assert td.parse_sshd_message("Failed password for x from 1.1.1.1", T0) is None
+
+
+def test_brute_force_with_injected_usernames_blames_only_the_real_source():
+    e = td.ThreatEngine(learning=False)
+    events = [
+        td.parse_sshd_message(
+            f"Failed password for invalid user x{i} from {VICTIM} port 22 ssh2 "
+            f"from {ATTACKER} port {40000 + i} ssh2",
+            T0 + i,
+        )
+        for i in range(12)
+    ]
+    out = feed(e, events)
+    assert "brute_force" in names(out)
+    assert {f.ip for f in out} == {ATTACKER}  # the victim address never appears
+
+
 # ── SSH detectors ──────────────────────────────────────────────────────────
 
 
