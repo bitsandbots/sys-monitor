@@ -114,7 +114,13 @@ def is_blockable_ip(ip: str, allowlist: list | None = None) -> bool:
     if not ip:
         return False
     addr = ipaddress.ip_address(ip)
-    if not addr.is_global:
+    # is_global alone is not enough: multicast reports True on some versions.
+    if (
+        not addr.is_global
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    ):
         return False
     return not any(
         addr in net for net in (allowlist or []) if net.version == addr.version

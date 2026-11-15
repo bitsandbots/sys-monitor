@@ -1,0 +1,8 @@
+# /etc/sudoers.d/sys-monitor-block  (root:root, mode 0440; validate with visudo -cf)
+# Lets the sys-monitor service user run ONLY the IP-block helper as root.
+# The helper validates every argument itself (public IPs only, bounded TTL).
+sys-monitor ALL=(root) NOPASSWD: /usr/local/sbin/sysmon-block init, \
+    /usr/local/sbin/sysmon-block add *, \
+    /usr/local/sbin/sysmon-block del *, \
+    /usr/local/sbin/sysmon-block list, \
+    /usr/local/sbin/sysmon-block flush

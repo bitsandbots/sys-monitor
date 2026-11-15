@@ -37,6 +37,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, abort
 
 try:
+    import ip_block as _ib
     import threat_detect as _td
 
     THREAT_AVAILABLE = True
@@ -107,6 +108,14 @@ CONFIG = {
     ],
     # Extra IPs/CIDRs that must never be flagged blockable (LAN is implicit).
     "threat_allowlist": os.getenv("SYSMONITOR_THREAT_ALLOWLIST", ""),
+    # IP blocker: off | dry-run | manual | auto (enforcement via root helper).
+    "block_mode": os.getenv("SYSMONITOR_BLOCK_MODE", "off").lower(),
+    "block_helper": os.getenv("SYSMONITOR_BLOCK_HELPER", "/usr/local/sbin/sysmon-block"),
+    "block_max_active": int(os.getenv("SYSMONITOR_BLOCK_MAX_ACTIVE", "200")),
+    "block_max_per_hour": int(os.getenv("SYSMONITOR_BLOCK_MAX_PER_HOUR", "10")),
+    # Base URL phones/browsers use to reach this agent; enables the one-tap
+    # "Block" button on ntfy notifications (signed, single-IP, 1h expiry).
+    "public_url": os.getenv("SYSMONITOR_PUBLIC_URL", "").rstrip("/"),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1972,7 +1981,7 @@ def _collect_alert_conditions() -> dict:
     return bad
 
 
-def _send_alert(event: str, rule: str, severity: str, message: str) -> None:
+def _send_alert(event: str, rule: str, severity: str, message: str, actions: str = "") -> None:
     """Deliver one alert to every configured destination (best effort).
 
     Failures are logged to the event log and swallowed: an unreachable
@@ -2019,6 +2028,7 @@ def _send_alert(event: str, rule: str, severity: str, message: str) -> None:
                     ).decode(),
                     "Priority": prio,
                     "Tags": "white_check_mark" if recovered else "warning",
+                    **({"Actions": actions} if actions else {}),
                 },
                 method="POST",
             )
@@ -2228,6 +2238,8 @@ _threat_engine = None
 _threat_tailers: dict = {}
 _threat_feed: deque = deque(maxlen=5000)  # events pushed by in-process hooks
 _threat_notified: deque = deque()  # timestamps of recent notifications
+_blocker = None
+_approval_key: bytes = b""
 _threat_state: dict = {
     "started": False,
     "learning": True,
@@ -2286,6 +2298,7 @@ def _threat_init() -> None:
     _threat_tailers.clear()
     for path in CONFIG["threat_access_logs"]:
         _threat_tailers[path] = _td.FileTailer(path)
+    _blocker_init(engine, state_dir)
     with _threat_lock:
         _threat_engine = engine
         _threat_state.update(
@@ -2294,6 +2307,43 @@ def _threat_init() -> None:
             learning_ends=ends,
             problems=problems,
         )
+
+
+def _blocker_init(engine, state_dir) -> None:
+    """Create the BlockManager for the configured mode (never raises)."""
+    global _blocker, _approval_key
+    mode = CONFIG["block_mode"]
+    if mode not in _ib.MODES:
+        log_event(f"Unknown SYSMONITOR_BLOCK_MODE '{mode}' — blocker off", "warning")
+        mode = "off"
+    settings = _ib.Settings(
+        mode=mode,
+        helper=CONFIG["block_helper"],
+        max_active=CONFIG["block_max_active"],
+        max_per_hour=CONFIG["block_max_per_hour"],
+        allowlist=_td.parse_networks(CONFIG["threat_allowlist"]),
+    )
+    _blocker = _ib.BlockManager(
+        CONFIG["history_db"],
+        settings,
+        known_ips=lambda: set(engine.baseline.ips),
+        log=log_event,
+    )
+    try:
+        _approval_key = _ib.load_or_create_secret(state_dir / "approval.key")
+        _blocker.init_helper()
+    except (OSError, _ib.BlockRefused) as exc:
+        log_event(f"IP blocker init problem: {exc}", "warning")
+
+
+def _approval_action(ip: str) -> str:
+    """ntfy 'Actions' header value for a one-tap signed Block button."""
+    if not (CONFIG["public_url"] and _approval_key):
+        return ""
+    exp = int(time.time()) + _ib.APPROVAL_TTL
+    sig = _ib.sign_approval(_approval_key, ip, exp)
+    url = f"{CONFIG['public_url']}/api/blocks/approve?ip={ip}&exp={exp}&sig={sig}"
+    return f"http, Block {ip}, {url}, method=POST, clear=true"
 
 
 def _threat_collect_events() -> list:
@@ -2315,10 +2365,19 @@ def _threat_collect_events() -> list:
     return events
 
 
-def _threat_notify(f) -> None:
+def _threat_notify(f, decision: dict | None = None) -> None:
     """Send a warning/critical finding, capped per hour to avoid floods."""
     if f.severity == "info":
         return
+    decision = decision or {}
+    message, actions = f.message, ""
+    act = decision.get("action")
+    if act == "blocked":
+        message += f" — BLOCKED for {decision['ttl'] // 3600}h"
+    elif act == "would_block":
+        message += " — would block (dry-run)"
+    elif act == "proposed" and f.blockable and CONFIG["block_mode"] in ("manual", "auto"):
+        actions = _approval_action(f.ip)
     now = time.time()
     with _threat_lock:
         while _threat_notified and now - _threat_notified[0] > 3600:
@@ -2327,7 +2386,9 @@ def _threat_notify(f) -> None:
             _threat_state["suppressed"] += 1
             return
         _threat_notified.append(now)
-    _send_alert("threat", f"threat:{f.detector}:{f.ip or f.user}", f.severity, f.message)
+    _send_alert(
+        "threat", f"threat:{f.detector}:{f.ip or f.user}", f.severity, message, actions=actions
+    )
 
 
 def _threat_poll_once() -> list:
@@ -2357,11 +2418,19 @@ def _threat_poll_once() -> list:
         finally:
             conn.close()
     for f in findings:
+        decision = {}
+        if _blocker is not None and f.blockable:
+            try:
+                decision = _blocker.handle_finding(f)
+            except Exception as exc:  # noqa: BLE001 - never lose the alert
+                log_event(f"Blocker error for {f.ip}: {exc}", "warning")
+        f.extra["block"] = decision
         log_event(
-            f"THREAT [{f.severity}] {f.message}",
+            f"THREAT [{f.severity}] {f.message}"
+            + (f" [{decision['action']}]" if decision.get("action", "none") != "none" else ""),
             "error" if f.severity == "critical" else "warning",
         )
-        _threat_notify(f)
+        _threat_notify(f, decision)
     return findings
 
 
@@ -2530,6 +2599,97 @@ def api_threats():
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+def _blocker_or_503():
+    if not (_threat_enabled() and _blocker is not None):
+        abort(503, description="IP blocker unavailable (threat detection disabled)")
+    return _blocker
+
+
+@app.route("/api/blocks")
+@require_auth
+def api_blocks():
+    """Blocker mode, active blocks and recent decisions (incl. dry-run)."""
+    if not (_threat_enabled() and _blocker is not None):
+        return jsonify({"enabled": False, "mode": "off", "active": [], "history": []})
+    return jsonify(
+        {
+            "enabled": _blocker.s.mode != "off",
+            "mode": _blocker.s.mode,
+            "active": _blocker.active(),
+            "history": _blocker.history(int(request.args.get("limit", "50") or 50)),
+        }
+    )
+
+
+@app.route("/api/blocks", methods=["POST"])
+@require_auth
+@require_config_auth
+def api_blocks_add():
+    """Operator block: JSON {ip, reason?, ttl?, force?}. Public IPs only."""
+    mgr = _blocker_or_503()
+    body = request.get_json(silent=True) or {}
+    try:
+        ttl = int(body["ttl"]) if body.get("ttl") else None
+        res = mgr.block(
+            str(body.get("ip", "")),
+            str(body.get("reason") or "operator block"),
+            source="manual",
+            ttl=ttl,
+            force=bool(body.get("force")),
+        )
+    except (ValueError, _ib.BlockRefused) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **res})
+
+
+@app.route("/api/blocks/<path:ip>", methods=["DELETE"])
+@require_auth
+@require_config_auth
+def api_blocks_remove(ip):
+    """Unblock one address (allowed in every mode so blocks can always be undone)."""
+    mgr = _blocker_or_503()
+    try:
+        return jsonify({"success": True, **mgr.unblock(ip, by=f"api:{_client_ip()}")})
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/blocks/flush", methods=["POST"])
+@require_auth
+@require_config_auth
+def api_blocks_flush():
+    """Remove every block."""
+    mgr = _blocker_or_503()
+    try:
+        return jsonify({"success": True, "removed": mgr.flush(by=f"api:{_client_ip()}")})
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/blocks/approve", methods=["POST"])
+def api_blocks_approve():
+    """One-tap approval from a notification: signed, single-IP, expiring.
+
+    Deliberately not behind the bearer token — the HMAC signature is the
+    credential, and it only authorizes blocking the one address it names.
+    """
+    mgr = _blocker_or_503()
+    ip = request.args.get("ip", "")
+    sig = request.args.get("sig", "")
+    try:
+        exp = int(request.args.get("exp", "0"))
+    except ValueError:
+        abort(400, description="bad expiry")
+    if not _approval_key or not _ib.verify_approval(_approval_key, ip, exp, sig):
+        log_event(f"Invalid/expired block approval for {ip!r} from {_client_ip()}", "warning")
+        abort(403, description="invalid or expired approval")
+    try:
+        res = mgr.block(ip, "operator approval via notification", source="manual")
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **res})
 
 
 @app.route("/api/history")

@@ -53,6 +53,11 @@ def names(findings):
         ("203.0.113.9", False),
         ("not-an-ip", False),
         ("::ffff:8.8.8.8", True),
+        ("224.0.0.1", False),
+        ("239.1.1.1", False),
+        ("ff02::1", False),
+        ("240.0.0.1", False),
+        ("0.0.0.0", False),
     ],
 )
 def test_is_blockable_ip(ip, expected):

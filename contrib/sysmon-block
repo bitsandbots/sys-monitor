@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""sysmon-block — root helper that manages SysMonitor's nftables IP blocklist.
+
+Install to /usr/local/sbin/sysmon-block (root:root, 0755) and allow the
+service user to run it through sudo (see contrib/sysmon-block.sudoers).
+
+The helper is the last line of defence, so it validates independently of the
+caller: only globally-routable addresses outside /etc/sys-monitor/block-allowlist
+can be blocked, TTLs are bounded, and there is no way to express anything but
+"drop this one source address for N seconds".
+
+Usage:
+    sysmon-block init                 create the nft table, restore live blocks
+    sysmon-block add <ip> <seconds>   block one address (replaces its timer)
+    sysmon-block del <ip>             unblock one address
+    sysmon-block list                 JSON list of active blocks
+    sysmon-block flush                remove every block
+
+Exit codes: 0 ok, 2 refused/invalid input, 3 nft failure.
+The nft table is `inet sysmon`, hooked at prerouting (priority -150) so it
+covers both host services and Docker-published ports, and it is independent of
+ufw. It disappears on reboot; `init` (run by sys-monitor at start, or by the
+sysmon-block-restore unit) rebuilds it from the state file.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+TABLE = "sysmon"
+MIN_TTL = 60
+MAX_TTL = 30 * 86400
+STATE_FILE = Path(
+    os.environ.get("SYSMON_BLOCK_STATE", "/var/lib/sysmon-block/state.json")
+)
+ALLOWLIST_FILE = Path(
+    os.environ.get("SYSMON_BLOCK_ALLOWLIST", "/etc/sys-monitor/block-allowlist")
+)
+
+RULESET = f"""table inet {TABLE} {{
+    set blocklist4 {{ type ipv4_addr; flags timeout; }}
+    set blocklist6 {{ type ipv6_addr; flags timeout; }}
+    chain prerouting {{
+        type filter hook prerouting priority -150; policy accept;
+        ip saddr @blocklist4 counter drop
+        ip6 saddr @blocklist6 counter drop
+    }}
+}}
+"""
+
+
+class Refused(Exception):
+    """Input rejected by validation (exit code 2)."""
+
+
+class NftError(Exception):
+    """nft returned an error (exit code 3)."""
+
+
+def load_allowlist(path: Path | None = None) -> list:
+    """Read CIDRs/IPs (one per line, # comments) that must never be blocked."""
+    nets = []
+    try:
+        lines = (path or ALLOWLIST_FILE).read_text().splitlines()
+    except OSError:
+        return nets
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(line, strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def validate_ip(raw: str, allowlist: list | None = None) -> str:
+    """Return the canonical address or raise Refused.
+
+    Raises:
+        Refused: not an IP, not globally routable, or on the allowlist.
+    """
+    try:
+        addr = ipaddress.ip_address(raw.strip())
+    except ValueError as exc:
+        raise Refused(f"not an IP address: {raw!r}") from exc
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    # is_global alone is not enough: multicast (224.0.0.0/4, ff00::/8) reports
+    # True on some Python versions.
+    if (
+        not addr.is_global
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    ):
+        raise Refused(f"{addr} is not a public address; refusing to block")
+    for net in allowlist or []:
+        if net.version == addr.version and addr in net:
+            raise Refused(f"{addr} is allowlisted ({net}); refusing to block")
+    return str(addr)
+
+
+def validate_ttl(raw: str) -> int:
+    """Parse a TTL in seconds, bounded to [MIN_TTL, MAX_TTL]."""
+    try:
+        ttl = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise Refused(f"ttl must be an integer number of seconds: {raw!r}") from exc
+    if not MIN_TTL <= ttl <= MAX_TTL:
+        raise Refused(f"ttl must be between {MIN_TTL} and {MAX_TTL} seconds")
+    return ttl
+
+
+def _set_name(ip: str) -> str:
+    return "blocklist6" if ":" in ip else "blocklist4"
+
+
+def nft(args: list, run=subprocess.run, stdin: str | None = None):
+    """Run nft with a fixed argv (never through a shell)."""
+    try:
+        res = run(
+            ["nft", *args], input=stdin, capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise NftError(f"cannot run nft: {exc}") from exc
+    return res
+
+
+def ensure_table(run=subprocess.run) -> None:
+    """Create the sysmon table if it doesn't exist."""
+    if nft(["list", "table", "inet", TABLE], run).returncode == 0:
+        return
+    res = nft(["-f", "-"], run, stdin=RULESET)
+    if res.returncode != 0:
+        raise NftError(f"creating table failed: {res.stderr.strip()}")
+
+
+def read_state(path: Path | None = None) -> dict:
+    """Load {ip: expiry_epoch} from the state file (empty if absent/corrupt)."""
+    try:
+        data = json.loads((path or STATE_FILE).read_text())
+        return {str(k): float(v) for k, v in data.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def write_state(state: dict, path: Path | None = None) -> None:
+    """Atomically persist the state file (dir 0700, file 0600)."""
+    path = path or STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def _add_element(ip: str, ttl: int, run) -> None:
+    name = _set_name(ip)
+    # Replace semantics: drop any existing element so the timer restarts.
+    nft(["delete", "element", "inet", TABLE, name, f"{{ {ip} }}"], run)
+    res = nft(
+        ["add", "element", "inet", TABLE, name, f"{{ {ip} timeout {ttl}s }}"], run
+    )
+    if res.returncode != 0:
+        raise NftError(f"add failed: {res.stderr.strip()}")
+
+
+def cmd_add(raw_ip: str, raw_ttl: str, run=subprocess.run, now=time.time) -> dict:
+    ip = validate_ip(raw_ip, load_allowlist())
+    ttl = validate_ttl(raw_ttl)
+    ensure_table(run)
+    _add_element(ip, ttl, run)
+    state = read_state()
+    state[ip] = now() + ttl
+    write_state(state)
+    return {"ok": True, "ip": ip, "ttl": ttl}
+
+
+def cmd_del(raw_ip: str, run=subprocess.run) -> dict:
+    try:
+        addr = ipaddress.ip_address(raw_ip.strip())
+    except ValueError as exc:
+        raise Refused(f"not an IP address: {raw_ip!r}") from exc
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    ip = str(addr)
+    ensure_table(run)
+    nft(["delete", "element", "inet", TABLE, _set_name(ip), f"{{ {ip} }}"], run)
+    state = read_state()
+    state.pop(ip, None)
+    write_state(state)
+    return {"ok": True, "ip": ip}
+
+
+def cmd_list(run=subprocess.run) -> dict:
+    """Active blocks as reported by nft (authoritative for remaining time)."""
+    blocks = []
+    if nft(["list", "table", "inet", TABLE], run).returncode != 0:
+        return {"ok": True, "blocks": blocks}
+    for name in ("blocklist4", "blocklist6"):
+        res = nft(["-j", "list", "set", "inet", TABLE, name], run)
+        if res.returncode != 0:
+            continue
+        try:
+            items = json.loads(res.stdout)["nftables"]
+        except (ValueError, KeyError):
+            continue
+        for item in items:
+            for elem in item.get("set", {}).get("elem", []):
+                e = elem.get("elem", elem)
+                if isinstance(e, dict) and "val" in e:
+                    blocks.append(
+                        {
+                            "ip": e["val"],
+                            "expires_in": e.get("expires", e.get("timeout")),
+                        }
+                    )
+    return {"ok": True, "blocks": blocks}
+
+
+def cmd_flush(run=subprocess.run) -> dict:
+    ensure_table(run)
+    for name in ("blocklist4", "blocklist6"):
+        nft(["flush", "set", "inet", TABLE, name], run)
+    write_state({})
+    return {"ok": True}
+
+
+def cmd_init(run=subprocess.run, now=time.time) -> dict:
+    """Create the table and re-add every unexpired block from the state file."""
+    ensure_table(run)
+    current = now()
+    state = {ip: exp for ip, exp in read_state().items() if exp > current}
+    allow = load_allowlist()
+    restored = 0
+    for ip, exp in list(state.items()):
+        try:
+            validate_ip(ip, allow)
+            _add_element(ip, max(MIN_TTL, int(exp - current)), run)
+            restored += 1
+        except (Refused, NftError):
+            state.pop(ip, None)
+    write_state(state)
+    return {"ok": True, "restored": restored}
+
+
+def main(argv: list | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if os.geteuid() != 0 and not os.environ.get("SYSMON_BLOCK_ALLOW_NONROOT"):
+            raise Refused("must run as root")
+        if argv[:1] == ["init"] and len(argv) == 1:
+            out = cmd_init()
+        elif argv[:1] == ["add"] and len(argv) == 3:
+            out = cmd_add(argv[1], argv[2])
+        elif argv[:1] == ["del"] and len(argv) == 2:
+            out = cmd_del(argv[1])
+        elif argv == ["list"]:
+            out = cmd_list()
+        elif argv == ["flush"]:
+            out = cmd_flush()
+        else:
+            raise Refused(
+                "usage: sysmon-block init|add <ip> <secs>|del <ip>|list|flush"
+            )
+    except Refused as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 2
+    except NftError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 3
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

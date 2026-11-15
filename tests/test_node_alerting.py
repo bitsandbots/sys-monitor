@@ -20,7 +20,7 @@ def alert_state(monkeypatch):
     sys_monitor._alert_streak.clear()
     sys_monitor._alert_history.clear()
     sent = []
-    monkeypatch.setattr(sys_monitor, "_send_alert", lambda *a: sent.append(a))
+    monkeypatch.setattr(sys_monitor, "_send_alert", lambda *a, **k: sent.append(a))
     sys_monitor.CONFIG["alert_confirm_samples"] = 2
     yield sent
     sys_monitor._alert_active.clear()
