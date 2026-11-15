@@ -14,6 +14,13 @@ Implemented in `threat_detect.py` (stdlib only, pure detectors) and wired into
 | Web access logs | tail of combined-format logs (`SYSMONITOR_ACCESS_LOGS`, default `/var/log/nginx/access.log`) | read access (group `adm`) |
 | SysMonitor itself | failed dashboard/API auth attempts | nothing |
 
+sshd lines contain attacker-controlled text (the username of a failed login can
+hold spaces and look like `x from 8.8.8.8 port 22 ssh2`), so the sshd parsers are
+anchored at both ends and take the source address only from the trailing
+`from <ip> port <n>` that sshd itself writes. Lines that do not fit exactly are
+dropped rather than guessed at: a missed event is better than blaming an innocent
+address.
+
 Storage is the history database (`SYSMONITOR_HISTORY_DB`, or
 `StateDirectory=sys-monitor`). Without it, detection is disabled.
 
