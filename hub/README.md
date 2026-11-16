@@ -57,11 +57,12 @@ All configuration via environment variables:
 |---|---|---|
 | `SYSHUB_HOST` | `0.0.0.0` | Bind address |
 | `SYSHUB_PORT` | `8686` | Listen port |
-| `SYSHUB_TOKEN` | *(empty)* | Bearer token for hub API auth |
+| `SYSHUB_TOKEN` | *(empty)* | Bearer token for hub API auth (5 failures/60 s per IP locks out for the window). With no token, `POST /api/nodes/<id>/power/<action>` is accepted from loopback only |
+| `SYSHUB_ALLOWED_HOSTS` | *(empty)* | Extra comma-separated `Host` names accepted besides IP literals, `localhost` and the machine hostname (`<name>`, `<name>.local`); others get 400 (DNS-rebinding guard) |
 | `SYSHUB_POLL_INTERVAL` | `5` | Seconds between fleet polls |
 | `SYSHUB_TIMEOUT` | `4` | HTTP timeout per node request |
 | `SYSHUB_DISCOVERY_PORT` | `8585` | Default port to scan during discovery |
-| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to persisted node registry |
+| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to persisted node registry (written 0600; holds node tokens) |
 
 ## systemd
 
@@ -95,7 +96,7 @@ sudo systemctl enable --now sys-monitor-hub
 - `GET /api/nodes/<id>/processes` — Top processes
 - `GET /api/nodes/<id>/network` — Network interfaces
 - `GET /api/nodes/<id>/logs` — Event log
-- `POST /api/nodes/<id>/power/<action>` — Reboot/shutdown
+- `POST /api/nodes/<id>/power/<action>` — Reboot/shutdown (needs `SYSHUB_TOKEN`, or a loopback caller when unset)
 
 ---
 
