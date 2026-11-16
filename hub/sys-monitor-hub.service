@@ -5,13 +5,41 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+# The hub only makes HTTP calls to nodes (and runs avahi-browse), so it needs no
+# privileges. install.sh creates this user and moves any old registry (which holds
+# node tokens) from /opt/sys-monitor/hub to the state directory below.
+User=sys-monitor-hub
+Group=sys-monitor-hub
 WorkingDirectory=/opt/sys-monitor/hub
 ExecStart=/usr/bin/python3 /opt/sys-monitor/hub/sys_monitor_hub.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+
+# Registry lives in /var/lib/sys-monitor-hub (0700, owned by the user above)
+StateDirectory=sys-monitor-hub
+StateDirectoryMode=0700
+Environment=SYSHUB_NODES_FILE=/var/lib/sys-monitor-hub/hub_nodes.json
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+UMask=0077
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=256M
+TasksMax=128
 
 # Optional env overrides
 # Environment=SYSHUB_PORT=8686

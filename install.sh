@@ -180,6 +180,19 @@ do_uninstall() {
     ok "Removed $INSTALL_DIR"
   fi
 
+  # Hub registry holds node bearer tokens: don't leave it behind.
+  if [[ -d "$HUB_STATE" ]]; then
+    rm -rf "$HUB_STATE"
+    ok "Removed $HUB_STATE"
+  fi
+  if id "$HUB_USER" >/dev/null 2>&1; then
+    if userdel "$HUB_USER" 2>/dev/null; then
+      ok "Removed service user $HUB_USER"
+    else
+      warn "Could not remove service user $HUB_USER"
+    fi
+  fi
+
   ok "SysMonitor uninstalled."
 }
 
@@ -269,6 +282,32 @@ install_node() {
   ok "Service started but health check didn't respond on :${NODE_PORT} — check: journalctl -u $NODE_SERVICE"
 }
 
+# ── Hub service user + registry migration ─────────────────────────────────────
+# The hub runs unprivileged. Older installs kept the registry (node bearer
+# tokens included) world-readable next to the code; move it into the state dir.
+HUB_USER="sys-monitor-hub"
+HUB_STATE="/var/lib/sys-monitor-hub"
+
+_setup_hub_user() {
+  if ! id "$HUB_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --home-dir /nonexistent \
+      --shell /usr/sbin/nologin "$HUB_USER" \
+      || die "Could not create service user $HUB_USER"
+    ok "Created service user $HUB_USER"
+  fi
+  install -d -o "$HUB_USER" -g "$HUB_USER" -m 0700 "$HUB_STATE"
+  local old="$INSTALL_DIR/hub/hub_nodes.json"
+  if [[ -f "$old" && ! -e "$HUB_STATE/hub_nodes.json" ]]; then
+    # Copy first, delete the world-readable original only if the copy succeeded.
+    if install -o "$HUB_USER" -g "$HUB_USER" -m 0600 "$old" "$HUB_STATE/hub_nodes.json"; then
+      rm -f "$old"
+      ok "Moved node registry to $HUB_STATE (0600)"
+    else
+      warn "Could not copy $old to $HUB_STATE; the hub will start with an empty registry"
+    fi
+  fi
+}
+
 # ── Install hub ───────────────────────────────────────────────────────────────
 install_hub() {
   info "Installing SysMonitor Hub → $INSTALL_DIR/hub"
@@ -287,6 +326,7 @@ install_hub() {
   _pip_install "hub/requirements.txt"
   ok "Hub dependencies installed"
 
+  _setup_hub_user
   _open_port "$HUB_PORT"
   cp hub/sys-monitor-hub.service /etc/systemd/system/
   systemctl daemon-reload

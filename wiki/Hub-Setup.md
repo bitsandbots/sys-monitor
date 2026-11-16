@@ -114,7 +114,7 @@ Power actions are stricter than the rest: they need `SYSHUB_TOKEN`, or a loopbac
 
 ## Node Registry Persistence
 
-Registered nodes are stored in `hub_nodes.json` (default `./hub_nodes.json`, override with `SYSHUB_NODES_FILE`). The file is written on every add/remove/update, with mode `0600` and atomically, since it holds each node's bearer token; a failed save is printed to the hub's log. To reset the registry, delete the file and restart the hub.
+Registered nodes are stored in `hub_nodes.json` (default `./hub_nodes.json` when run from source; the systemd unit sets `/var/lib/sys-monitor-hub/hub_nodes.json`; override with `SYSHUB_NODES_FILE`). The file is written on every add/remove/update, with mode `0600` and atomically, since it holds each node's bearer token; a failed save is printed to the hub's log. To reset the registry, delete the file and restart the hub.
 
 ---
 

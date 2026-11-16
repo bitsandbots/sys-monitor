@@ -180,7 +180,7 @@ sudo systemctl enable --now sys-monitor-hub
 | `SYSHUB_POLL_INTERVAL` | `5` | Seconds between node polls |
 | `SYSHUB_TIMEOUT` | `4` | Per-request timeout to nodes (seconds) |
 | `SYSHUB_DISCOVERY_PORT` | `8585` | Port scanned during subnet discovery |
-| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to persist node registry |
+| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to persist node registry (the systemd unit uses `/var/lib/sys-monitor-hub/hub_nodes.json`) |
 
 ### Adding Nodes
 
@@ -212,15 +212,19 @@ The hub stores and uses the token for all requests to that node.
 
 ## Sudo Permissions
 
-The node agent runs as `root` under systemd (required for `systemctl` control and `reboot`/`shutdown`). For development without root, service control and power actions will fail gracefully — metric reads still work.
+The node agent runs as `root` under systemd by default (for `systemctl` control and `reboot`/`shutdown`); the Fleet Hub runs as the unprivileged `sys-monitor-hub` user. For development without root, service control and power actions will fail gracefully — metric reads still work.
 
-To run as a non-root user with limited sudo, add to `/etc/sudoers.d/sys-monitor`:
+To run it as a non-root user with scoped sudo, use the installer (it generates exact
+one-line-per-service sudoers and validates it with `visudo`; see the README section
+"Running the node agent as a non-root user"):
 
+```bash
+sudo contrib/install-nonroot.sh && sudo systemctl restart sys-monitor
 ```
-sys-monitor ALL=(ALL) NOPASSWD: /bin/systemctl, /sbin/reboot, /sbin/shutdown
-```
 
-Then change `User=root` to `User=sys-monitor` in the service file and create the user.
+Do **not** write `sys-monitor ALL=(ALL) NOPASSWD: /bin/systemctl, /sbin/reboot, ...` by hand:
+a bare `systemctl` is root, and on systemd hosts `reboot`/`shutdown` are the same file as
+`systemctl`, so those entries also allow any `systemctl` command.
 
 ## Firewall
 

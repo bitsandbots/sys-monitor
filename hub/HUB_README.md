@@ -62,7 +62,7 @@ All configuration via environment variables:
 | `SYSHUB_POLL_INTERVAL` | `5` | Seconds between fleet polls |
 | `SYSHUB_TIMEOUT` | `4` | HTTP timeout per node request |
 | `SYSHUB_DISCOVERY_PORT` | `8585` | Default port to scan during discovery |
-| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to persisted node registry (written 0600; holds node tokens) |
+| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to persisted node registry (written 0600; holds node tokens). The systemd unit sets `/var/lib/sys-monitor-hub/hub_nodes.json` and the hub runs as the unprivileged `sys-monitor-hub` user |
 
 ## systemd
 

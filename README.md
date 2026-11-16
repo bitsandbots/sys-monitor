@@ -40,7 +40,7 @@ Built for [CoreConduit Consulting Services](https://coreconduit.com) infrastruct
 
 ### History
 - Samples CPU, temperature, memory, network, disk and GPU every 60s into SQLite (7-day retention), with a History card on the Overview tab. Auto-enabled under the shipped systemd unit (`StateDirectory=sys-monitor`).
-- **NVIDIA GPU hosts:** the shipped unit's `PrivateDevices=true` hides the GPU. Install `contrib/sys-monitor-gpu.conf` as a drop-in (instructions inside the file) for `/api/gpu`.
+- **NVIDIA GPU hosts:** `/api/gpu` works with the default root unit. Only if you add `PrivateDevices=true` yourself (for example a hardened variant) do you need `contrib/sys-monitor-gpu.conf` as a drop-in to expose `/dev/nvidia*`.
 
 ### Discovery
 - The Fleet Hub finds nodes by `/24` scan **or mDNS** (`_sysmonitor._tcp`, Avahi). `install.sh` advertises each node automatically when `avahi-daemon` is present; the hub needs `avahi-utils` for mDNS lookups. See `docs/api.md` (Discovery).
@@ -252,23 +252,36 @@ The web UI currently does not send auth headers — token auth is designed for A
 | `/api/power/<action>` | POST | Reboot or shutdown |
 | `/api/logs` | GET | Event log (`?limit=N`, `?system=true`) |
 
-## Sudoers (optional, for non-root)
+## Running the node agent as a non-root user (optional)
 
-If running as a non-root user, add scoped sudoers rules:
+The shipped unit runs the node agent as `root` (it needs `systemctl`, `kill`,
+`reboot`/`shutdown`, journal and socket-owner access). To run it unprivileged with
+scoped sudo instead:
 
 ```bash
-# /etc/sudoers.d/sys-monitor
-# Restrict to specific services rather than wildcards
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl start ssh nginx docker ollama mosquitto
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop ssh nginx docker ollama mosquitto
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart ssh nginx docker ollama mosquitto
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable ssh nginx docker ollama mosquitto
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable ssh nginx docker ollama mosquitto
-sysmonitor ALL=(ALL) NOPASSWD: /sbin/reboot
-sysmonitor ALL=(ALL) NOPASSWD: /sbin/shutdown
+sudo contrib/install-nonroot.sh                       # after install.sh
+contrib/install-nonroot.sh --print-sudoers            # preview the sudoers, no root needed
+sudo systemctl restart sys-monitor
 ```
 
-**Important:** List each service explicitly rather than using wildcards to prevent privilege escalation.
+It creates the `sys-monitor` user, installs a systemd drop-in, moves the files the
+agent writes (`services.json`, security allowlist/baseline) into
+`/var/lib/sys-monitor`, and generates `/etc/sudoers.d/sys-monitor` (validated with
+`visudo`) with **one exact line per action and service**. Re-run it after you change
+the monitored services: the dashboard cannot widen sudo.
+
+Do not hand-write these rules. `systemctl start ssh nginx` only matches that exact
+argument string, `systemctl *` is root, and on systemd hosts a bare `reboot` or
+`shutdown` entry is the same file as `systemctl`, so sudo lets it run **any**
+`systemctl` command. The installer pins their arguments.
+
+Trade-off: unprivileged, `ss -p` and `/proc/<pid>/exe` only show the agent's own
+processes, so the Security tab loses process names for other users' sockets. The
+drop-in has a commented `AmbientCapabilities=` line if you accept that broader read
+access. The IP blocker and quarantine need no extra setup (`contrib/install-blocker.sh`).
+
+The Fleet Hub always runs unprivileged (`sys-monitor-hub` user, hardened unit); its
+registry lives in `/var/lib/sys-monitor-hub/hub_nodes.json` (0600).
 
 ## Architecture
 

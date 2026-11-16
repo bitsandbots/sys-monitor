@@ -68,7 +68,7 @@ Live connection/listener monitoring needs no configuration — it runs automatic
 | `SYSHUB_POLL_INTERVAL` | `5` | Seconds between fleet health polls. |
 | `SYSHUB_TIMEOUT` | `4` | Per-node HTTP timeout in seconds. |
 | `SYSHUB_DISCOVERY_PORT` | `8585` | Default port to probe during network discovery. |
-| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to the persistent node registry (written `0600`; it holds node tokens). |
+| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to the persistent node registry (written `0600`; it holds node tokens). The systemd unit sets `/var/lib/sys-monitor-hub/hub_nodes.json`. |
 | `SYSHUB_DEBUG` | `false` | Flask debug mode. |
 
 ### Node Registry
