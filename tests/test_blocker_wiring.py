@@ -326,3 +326,29 @@ def test_blocker_init_warns_when_enabled_with_an_empty_allowlist(monkeypatch, tm
         assert not any("EMPTY allowlist" in m for m in logs)
     finally:
         sys_monitor._blocker = None
+
+
+# ── audit hardening: limit parsing and approval throttling ──────────────
+
+
+@pytest.mark.parametrize("q", ["abc", "-5", "1000000000", ""])
+def test_blocks_limit_is_clamped_not_a_500(blk, node_client, q):
+    assert node_client.get(f"/api/blocks?limit={q}").status_code == 200
+
+
+def test_bad_approvals_trip_the_lockout_and_are_log_capped(blk, node_client, monkeypatch):
+    sys_monitor._auth_failures.clear()
+    logged = []
+    monkeypatch.setattr(sys_monitor, "log_event", lambda m, lvl="info": logged.append(m))
+    exp, _ = _approval()
+    long_ip = "A" * 5000
+    url = f"/api/blocks/approve?ip={long_ip}&exp={exp}&sig={'0' * 64}"
+    for _ in range(sys_monitor._AUTH_FAIL_MAX):
+        assert node_client.post(url).status_code == 403
+    assert max(len(m) for m in logged) < 200
+    assert node_client.post(url).status_code == 429
+    # A valid link from the locked-out client is refused too, until the window ends.
+    exp, sig = _approval()
+    ok = node_client.post(f"/api/blocks/approve?ip={PUB}&exp={exp}&sig={sig}")
+    assert ok.status_code == 429
+    sys_monitor._auth_failures.clear()
