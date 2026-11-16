@@ -88,22 +88,27 @@ journalctl -u sys-monitor -f
 
 ---
 
-## Sudoers (Non-Root)
+## Non-Root Node Agent
 
-If running as a non-root user, grant scoped sudoers access:
+The node agent runs as `root` by default. To run it unprivileged with scoped sudo:
 
-```
-# /etc/sudoers.d/sys-monitor
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl start ssh nginx docker ollama
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop ssh nginx docker ollama
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart ssh nginx docker ollama
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable ssh nginx docker ollama
-sysmonitor ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable ssh nginx docker ollama
-sysmonitor ALL=(ALL) NOPASSWD: /sbin/reboot
-sysmonitor ALL=(ALL) NOPASSWD: /sbin/shutdown
+```bash
+sudo contrib/install-nonroot.sh                 # after install.sh
+contrib/install-nonroot.sh --print-sudoers      # preview, no root needed
+sudo systemctl restart sys-monitor
 ```
 
-List each service explicitly — do **not** use wildcards.
+It creates the `sys-monitor` user, a systemd drop-in, `/var/lib/sys-monitor` for the files
+the agent writes, and `/etc/sudoers.d/sys-monitor` with one exact line per action and
+service (re-run it after changing the monitored services). Don't hand-write the rules: a
+bare `systemctl` entry is root, and on systemd hosts a bare `reboot`/`shutdown` entry lets
+sudo run any `systemctl` command because they are the same file.
+
+Trade-off: unprivileged, other users' sockets show no process names on the Security tab
+unless you enable the drop-in's commented `AmbientCapabilities=` line.
+
+The Fleet Hub always runs as the unprivileged `sys-monitor-hub` user; its registry is
+`/var/lib/sys-monitor-hub/hub_nodes.json` (0600) and `install.sh` migrates an old one.
 
 ---
 

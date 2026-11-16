@@ -48,7 +48,7 @@ The node agent uses **differential sampling** — it computes CPU% from the delt
 
 ## `systemctl` commands fail (Permission denied)
 
-The service is running as a non-root user without sudoers rules. Add scoped rules — see [[Installation#Sudoers (Non-Root)]].
+The service is running as a non-root user without sudoers rules. Run `sudo contrib/install-nonroot.sh` (it generates exact, validated rules; re-run it after changing the monitored services) — see [[Installation#Non-Root Node Agent]].
 
 ---
 
