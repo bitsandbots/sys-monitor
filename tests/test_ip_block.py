@@ -533,3 +533,11 @@ def test_helper_still_honours_overrides_for_the_test_suite(monkeypatch):
     mod = _load_helper()
     assert str(mod.STATE_FILE) == _OVERRIDES["SYSMON_BLOCK_STATE"]
     assert mod.SELF == _OVERRIDES["SYSMON_BLOCK_SELF"]
+
+
+def test_quarantine_ssh_exemption_requires_established_state():
+    """Source-port exemptions must be limited to replies on inbound connections;
+    otherwise any local process can bind port 22/2222 and connect out."""
+    sport_lines = [ln for ln in helper.Q_RULESET.splitlines() if "sport" in ln and "accept" in ln]
+    assert sport_lines, "expected an SSH reply exemption in the output chain"
+    assert all("ct state established" in ln for ln in sport_lines), sport_lines
