@@ -14,6 +14,8 @@ CoreConduit Consulting Services — https://coreconduit.com
 License: MIT
 """
 
+import hmac
+import ipaddress
 import json
 import os
 import re
@@ -23,11 +25,13 @@ import subprocess
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from datetime import datetime
 from functools import wraps
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from flask import Flask, jsonify, render_template, request, abort
@@ -67,6 +71,20 @@ _NODES_FILE = Path(
 # ═══════════════════════════════════════════════════════════════════════════
 _nodes_lock = threading.Lock()
 _nodes = {}  # keyed by node_id (user-assigned or auto-generated)
+
+
+def _valid_port(value):
+    """Return value as an int in 1-65535, else None (never trust a JSON port)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+_SEGMENT_RE = re.compile(r"[A-Za-z0-9@_:-][A-Za-z0-9@._:-]*")  # no "." / ".." segments
 
 
 def _generate_id(host, port):
@@ -118,10 +136,16 @@ def _save_nodes():
                 "token": n.get("token", ""),
                 "added": n.get("added", ""),
             }
+    # Holds every node's bearer token: create 0600 and swap in atomically so a
+    # crash can't leave a truncated registry and other local users can't read it.
+    tmp = _NODES_FILE.with_name(_NODES_FILE.name + ".tmp")
     try:
-        _NODES_FILE.write_text(json.dumps(persist, indent=2) + "\n")
-    except OSError:
-        pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(persist, indent=2) + "\n")
+        os.replace(tmp, _NODES_FILE)
+    except OSError as exc:
+        print(f"[hub] could not save node registry {_NODES_FILE}: {exc}", flush=True)
 
 
 def _add_node(host, port=8585, label="", token=""):
@@ -545,13 +569,16 @@ def _discover_subnet(subnet=None, port=None, timeout=1.5):
 
     with ThreadPoolExecutor(max_workers=32) as pool:
         futures = {pool.submit(_probe, ip): ip for ip in hosts}
-        for f in as_completed(futures, timeout=45):
-            try:
-                result = f.result()
-                if result:
-                    found.append(result)
-            except Exception:
-                pass
+        try:
+            for f in as_completed(futures, timeout=45):
+                try:
+                    result = f.result()
+                    if result:
+                        found.append(result)
+                except Exception:
+                    pass
+        except FuturesTimeout:
+            pass  # return what answered in time; stragglers are abandoned
 
     return sorted(found, key=lambda x: x["host"])
 
@@ -677,30 +704,115 @@ def _serialize_node(n):
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth Middleware
 # ═══════════════════════════════════════════════════════════════════════════
+_AUTH_FAIL_MAX = 5
+_AUTH_FAIL_WINDOW = 60  # seconds
+_auth_failures = defaultdict(deque)
+_auth_lock = threading.Lock()
+
+
+def _client_ip():
+    return request.remote_addr or "unknown"
+
+
+def _is_loopback_client(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback
+
+
+def _verify_bearer(token, ip):
+    """Abort 429/401 unless the request carries the bearer token.
+
+    Constant-time compare with a per-IP lockout, same policy as the node agent.
+    """
+    now = time.time()
+    with _auth_lock:
+        q = _auth_failures[ip]
+        while q and now - q[0] > _AUTH_FAIL_WINDOW:
+            q.popleft()
+        if len(q) >= _AUTH_FAIL_MAX:
+            abort(429, description="Too many failed attempts")
+        supplied = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(supplied.encode(), f"Bearer {token}".encode()):
+            q.append(now)
+            abort(401, description="Unauthorized")
+
+
 def require_auth(f):
-    """Optional bearer-token authentication."""
+    """Optional bearer-token authentication (off when SYSHUB_TOKEN is unset)."""
 
     @wraps(f)
     def decorated(*args, **kwargs):
         token = HUB_CONFIG["auth_token"]
         if token:
-            auth = request.headers.get("Authorization", "")
-            if auth != f"Bearer {token}":
-                abort(401, description="Unauthorized")
+            _verify_bearer(token, _client_ip())
         return f(*args, **kwargs)
 
     return decorated
 
 
+def require_strict_auth(f):
+    """For fleet-wide destructive actions (power): the hub forwards each node's
+    stored token, so with no SYSHUB_TOKEN an open hub would launder the node's
+    own protection. No token configured -> loopback callers only."""
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = HUB_CONFIG["auth_token"]
+        ip = _client_ip()
+        if token:
+            _verify_bearer(token, ip)
+        elif not _is_loopback_client(ip):
+            abort(403, description="Set SYSHUB_TOKEN to use this action over the network")
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+def _allowed_hosts():
+    hosts = {
+        h.strip().lower()
+        for h in os.getenv("SYSHUB_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    }
+    name = socket.gethostname().lower()
+    return hosts | {"localhost", name, f"{name}.local"}
+
+
+_ALLOWED_HOSTS = _allowed_hosts()
+
+
+def _host_ok(hostport):
+    """Accept IP literals and known names only (blocks DNS rebinding)."""
+    host = hostport.strip().lower()
+    if host.startswith("["):
+        host = host[1 : host.find("]")]
+    elif host.count(":") == 1:
+        host = host.split(":")[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return host in _ALLOWED_HOSTS
+
+
 @app.before_request
 def _csrf_guard():
-    """Reject cross-origin state-changing requests (CSRF via a plain form POST)."""
+    """Reject DNS rebinding (bad Host) and cross-origin state-changing requests."""
+    if not _host_ok(request.host):
+        abort(400, description="Host not allowed")
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return
-    expected = f"{request.scheme}://{request.host}"
     source = request.headers.get("Origin") or request.headers.get("Referer")
-    if source and not source.startswith(expected):
-        abort(403, description="Cross-origin request blocked")
+    if source:
+        # Exact scheme+host[:port]; a prefix test lets hub.lan.evil.com pass.
+        src = urlparse(source)
+        if (src.scheme, src.netloc) != (request.scheme, request.host):
+            abort(403, description="Cross-origin request blocked")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -735,15 +847,19 @@ def api_fleet():
 @require_auth
 def api_add_node():
     data = request.get_json(silent=True) or {}
+    if not all(isinstance(data.get(k, ""), str) for k in ("host", "label", "token")):
+        return jsonify({"success": False, "error": "host, label and token must be strings"}), 400
     host = data.get("host", "").strip()
-    port = data.get("port", 8585)
     label = data.get("label", "").strip()
     token = data.get("token", "").strip()
+    port = _valid_port(data.get("port", 8585))
+    if port is None:
+        return jsonify({"success": False, "error": "port must be 1-65535"}), 400
     if not host:
         return jsonify({"success": False, "error": "Host required"}), 400
     if not re.match(r"^[\d.a-zA-Z_:-]+$", host):
         return jsonify({"success": False, "error": "Invalid host"}), 400
-    nid, created = _add_node(host, int(port), label, token)
+    nid, created = _add_node(host, port, label, token)
     if not created:
         return (
             jsonify({"success": False, "error": "Node already registered", "id": nid}),
@@ -770,6 +886,9 @@ def api_update_node(nid):
         node = _nodes.get(nid)
         if not node:
             return jsonify({"success": False, "error": "Not found"}), 404
+        for key in ("label", "token"):
+            if key in data and not isinstance(data[key], str):
+                return jsonify({"success": False, "error": f"{key} must be a string"}), 400
         if "label" in data:
             node["label"] = data["label"].strip()
         if "token" in data:
@@ -795,7 +914,9 @@ def api_discover():
     if method != "scan":
         return jsonify({"error": "method must be 'scan' or 'mdns'"}), 400
     subnet = (data.get("subnet") or "").strip() or None
-    port = data.get("port") or None
+    port = _valid_port(data.get("port") or HUB_CONFIG["discovery_port"])
+    if port is None:
+        return jsonify({"error": "port must be 1-65535", "found": [], "count": 0}), 400
     found = _discover_subnet(subnet, port)
     return jsonify({"found": found, "count": len(found)})
 
@@ -870,6 +991,8 @@ def api_node_service_action(nid, svc, action):
     node = _get_node(nid)
     if not node:
         return jsonify({"error": "Not found"}), 404
+    if not (_SEGMENT_RE.fullmatch(svc) and _SEGMENT_RE.fullmatch(action)):
+        return jsonify({"error": "Invalid service or action"}), 400
     data = _fetch_node(node, f"services/{svc}/{action}", method="POST")
     return jsonify(data) if data else (jsonify({"error": "unreachable"}), 502)
 
@@ -915,7 +1038,7 @@ def api_node_logs(nid):
 
 
 @app.route("/api/nodes/<nid>/power/<action>", methods=["POST"])
-@require_auth
+@require_strict_auth
 def api_node_power(nid, action):
     node = _get_node(nid)
     if not node:
