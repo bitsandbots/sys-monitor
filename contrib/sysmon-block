@@ -93,7 +93,10 @@ Q_RULESET = f"""table inet {Q_TABLE} {{
         oifname "lo" accept
         ip daddr @lan4 accept
         ip6 daddr @lan6 accept
-        tcp sport {{ 22, 2222 }} accept
+        # Replies on connections the REMOTE side opened (SSH in). Without the
+        # state match any local process could bind source port 22/2222 and
+        # connect out, bypassing quarantine: its first packet is ct state new.
+        ct state established tcp sport {{ 22, 2222 }} accept
         counter drop
     }}
     chain forward {{

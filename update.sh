@@ -9,7 +9,8 @@
 #   sudo ./update.sh --force      # Reinstall even if version matches
 #   sudo ./update.sh --hub        # Also update the hub component
 #   sudo ./update.sh --hub-only   # Update hub only
-#   sudo ./update.sh --no-verify  # Skip SHA-256 checksum verification
+#   sudo ./update.sh --no-verify  # Install without a verified release asset (the checksum
+#                                 # only detects corruption, not tampering: it ships with the tarball)
 #
 # Cron (daily at 3am):
 #   0 3 * * * root /opt/sys-monitor/update.sh --hub >> /var/log/sys-monitor-update.log 2>&1
@@ -25,7 +26,7 @@ NODE_SERVICE="sys-monitor"
 HUB_SERVICE="sys-monitor-hub"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 LOG_FILE="/var/log/sys-monitor-update.log"
-WORK_DIR="/tmp/sys-monitor-update-$$"
+WORK_DIR=""  # created by download_and_verify (see there)
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -68,7 +69,11 @@ preflight() {
   fi
   command -v curl    >/dev/null 2>&1 || die "curl not found. Install with: apt install curl"
   command -v python3 >/dev/null 2>&1 || die "python3 not found."
-  $VERIFY && { command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found."; }
+  # `$VERIFY && {...}` would return 1 as the function's last command when
+  # verification is off, and set -e would then kill the script silently.
+  if $VERIFY; then
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found."
+  fi
 }
 
 # ── Version helpers ───────────────────────────────────────────────────────────
@@ -132,19 +137,26 @@ for a in assets:
 
   # Fallback: construct URLs from release tag if assets list is empty
   # (for repos that use source archives rather than uploaded assets)
+  # Fail closed: an unverified archive is run as root, so it needs an explicit
+  # --no-verify rather than a silent downgrade when assets are missing.
   if [[ -z "$TARBALL_URL" ]]; then
+    if $VERIFY; then
+      die "Release ${LATEST_TAG} has no .tar.gz asset to verify. Re-run with --no-verify to install the unverified source archive."
+    fi
     TARBALL_URL="https://github.com/${REPO}/archive/refs/tags/${LATEST_TAG}.tar.gz"
-    VERIFY=false  # no checksum available for source archives
-    warn "No release assets found — falling back to source archive (checksum disabled)"
+    warn "No release assets found — using source archive (checksum disabled by --no-verify)"
   fi
 }
 
 # ── Download + verify ─────────────────────────────────────────────────────────
 download_and_verify() {
   local archive_name="sys-monitor-${LATEST_VERSION}.tar.gz"
-  local archive_path="${WORK_DIR}/${archive_name}"
 
-  mkdir -p "$WORK_DIR"
+  # Private 0700 dir with an unpredictable name: this script runs as root and
+  # executes install.sh from the extracted tree, so a guessable /tmp path would
+  # let any local user swap the file between extraction and execution.
+  WORK_DIR="$(mktemp -d /tmp/sys-monitor-update.XXXXXX)"
+  local archive_path="${WORK_DIR}/${archive_name}"
   info "Downloading $archive_name..."
   curl -fsSL --connect-timeout 15 --max-time 120 \
     -o "$archive_path" "$TARBALL_URL" \
@@ -163,7 +175,7 @@ download_and_verify() {
       || die "Checksum mismatch — aborting install. The downloaded file may be corrupt."
     ok "Checksum verified"
   elif $VERIFY; then
-    warn "No checksum URL available — skipping verification"
+    die "Release ${LATEST_TAG} has no .sha256 asset. Re-run with --no-verify to skip verification."
   fi
 
   ARCHIVE_PATH="$archive_path"
@@ -193,7 +205,8 @@ run_install() {
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 cleanup() {
-  rm -rf "$WORK_DIR"
+  [[ -n "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
+  return 0
 }
 trap cleanup EXIT
 
