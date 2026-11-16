@@ -460,3 +460,70 @@ def test_tailer_survives_rotation_and_missing_file(tmp_path):
     p.unlink()
     p.write_text("fresh\n")  # new inode
     assert t.read_new() == ["fresh"]
+
+
+# ── per-IP window cap (flood resistance) ────────────────────────────────
+
+
+def test_flood_from_one_ip_is_bounded_in_memory_and_time():
+    import time
+
+    eng = td.ThreatEngine(learning=False)
+    start = time.perf_counter()
+    for i in range(6_000):
+        eng.ingest(http(ts=T0 + i * 0.001))
+    elapsed = time.perf_counter() - start
+    assert len(eng._http[PUB]) <= 1000  # deterministic: the window is capped
+    assert elapsed < 10.0, f"flood took {elapsed:.1f}s (sanity bound)"
+
+
+def test_detectors_still_fire_with_capped_windows():
+    eng = td.ThreatEngine(learning=False)
+    found = []
+    for i in range(300):
+        found += eng.ingest(http(ts=T0 + i * 0.01))
+    assert any(f.detector == "request_burst" for f in found)
+    eng = td.ThreatEngine(learning=False)
+    found = []
+    for i in range(10):
+        found += eng.ingest(http(status=404, path=f"/HARNESS_{i}", ts=T0 + i))
+    assert any(f.detector == "web_scan" for f in found)
+
+
+# ── tailer: oversized line must not stall the log ───────────────────────
+
+
+def test_tailer_skips_a_line_longer_than_the_read_buffer(tmp_path):
+    p = tmp_path / "HARNESS_access.log"
+    p.write_text("start\n")
+    t = td.FileTailer(str(p))
+    assert t.read_new(max_bytes=1000) == []  # first open: positioned at EOF
+    with open(p, "a") as fh:
+        fh.write("x" * 3500 + "\n" + "good-1\n" + "good-2\n")
+    lines = []
+    for _ in range(12):
+        lines += t.read_new(max_bytes=1000)
+    assert lines == ["good-1", "good-2"]
+
+
+# ── journal backfill: timeout retries with a shorter window ──────────────
+
+
+def test_journal_backfill_timeout_retries_with_short_window(monkeypatch, tmp_path):
+    import subprocess
+    from types import SimpleNamespace
+
+    seen = []
+
+    def fake_run(cmd, **kw):
+        since = next(a for a in cmd if a.startswith("--since="))
+        seen.append(since)
+        if since == "--since=-30d":
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(td.subprocess, "run", fake_run)
+    errors = []
+    td.read_journal_sshd(str(tmp_path / "HARNESS_cursor"), backfill=True, errors=errors)
+    assert seen == ["--since=-30d", "--since=-1d"]
+    assert any("timed out" in e for e in errors)

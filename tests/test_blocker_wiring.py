@@ -352,3 +352,89 @@ def test_bad_approvals_trip_the_lockout_and_are_log_capped(blk, node_client, mon
     ok = node_client.post(f"/api/blocks/approve?ip={PUB}&exp={exp}&sig={sig}")
     assert ok.status_code == 429
     sys_monitor._auth_failures.clear()
+
+
+# ── audit: serialised block(), rollback, helper timeouts ────────────────
+
+
+def _pub(i):
+    return f"8.8.{i}.8"
+
+
+def test_concurrent_blocks_respect_the_active_cap(blk):
+    import threading
+
+    mgr = sys_monitor._blocker
+    mgr.s.max_active = 2
+
+    class Slow(FakeHelper):
+        def __call__(self, argv, **kw):
+            time.sleep(0.05)  # hold every thread between check and record
+            return super().__call__(argv, **kw)
+
+    mgr._run = Slow()
+    results = []
+
+    def go(i):
+        try:
+            mgr.block(_pub(i), "HARNESS race", source="manual")
+            results.append("ok")
+        except ib.BlockRefused:
+            results.append("refused")
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(1, 7)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert results.count("ok") == 2 and len(mgr.active()) == 2
+
+
+def test_failed_record_rolls_the_helper_back(blk, monkeypatch):
+    import sqlite3
+
+    class FailingInsert:
+        def __init__(self, conn):
+            self._c = conn
+
+        def execute(self, sql, *a):
+            if sql.lstrip().startswith("INSERT INTO ip_blocks"):
+                raise sqlite3.OperationalError("HARNESS disk full")
+            return self._c.execute(sql, *a)
+
+        def __enter__(self):
+            return self._c.__enter__()
+
+        def __exit__(self, *a):
+            return self._c.__exit__(*a)
+
+        def close(self):
+            self._c.close()
+
+    real = ib.open_db
+    monkeypatch.setattr(ib, "open_db", lambda path: FailingInsert(real(path)))
+    with pytest.raises(ib.BlockRefused, match="could not record"):
+        sys_monitor._blocker.block(PUB, "HARNESS", source="manual")
+    verbs = [c[0] for c in blk.fake.calls]
+    assert verbs == ["add", "del"], verbs
+
+
+def test_helper_timeout_is_reported_as_unknown_state(blk):
+    import subprocess
+
+    def hang(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0))
+
+    sys_monitor._blocker._run = hang
+    with pytest.raises(ib.BlockRefused, match="timed out.*check"):
+        sys_monitor._blocker.quarantine_start(5, by="HARNESS")
+
+
+def test_quarantine_calls_get_a_longer_helper_timeout(blk):
+    seen = []
+
+    def spy(argv, **kw):
+        seen.append(kw.get("timeout"))
+        return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+    sys_monitor._blocker._run = spy
+    sys_monitor._blocker.quarantine_start(5, by="HARNESS")
+    assert seen and min(seen) >= 60

@@ -21,6 +21,7 @@ import os
 import secrets
 import sqlite3
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,17 +176,26 @@ class BlockManager:
         self._run = runner
         self._clock = clock
         self._log = log
+        # Serialises check -> enforce -> record so concurrent blocks can't pass
+        # the same cap check (re-entrant: handle_finding calls block()).
+        self._lock = threading.RLock()
 
     # -- helper bridge ------------------------------------------------------
 
-    def _helper(self, *args: str) -> dict:
+    def _helper(self, *args: str, timeout: int = 20) -> dict:
         try:
             res = self._run(
                 ["sudo", "-n", self.s.helper, *args],
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=timeout,
             )
+        except subprocess.TimeoutExpired as exc:
+            # The helper may have finished the action; don't report plain failure.
+            raise BlockRefused(
+                f"helper timed out after {timeout}s; the action may still have "
+                "completed, check the blocker/quarantine status"
+            ) from exc
         except (OSError, subprocess.SubprocessError) as exc:
             raise BlockRefused(f"blocker helper unavailable: {exc}") from exc
         try:
@@ -308,6 +318,10 @@ class BlockManager:
         """
         if self.s.mode not in ("manual", "auto"):
             raise BlockRefused(f"blocking is disabled (mode: {self.s.mode})")
+        with self._lock:
+            return self._block_locked(ip, reason, source, ttl, detector, force)
+
+    def _block_locked(self, ip, reason, source, ttl, detector, force) -> dict:
         conn = self._conn()
         try:
             self._expire_stale(conn)
@@ -318,21 +332,33 @@ class BlockManager:
             ttl = int(ttl) if ttl else ladder_ttl
             self._helper("add", norm, str(ttl))
             now = int(self._clock())
-            with conn:
-                cur = conn.execute(
-                    "INSERT INTO ip_blocks (ip, ts, ttl, expires, mode, source, detector, "
-                    "reason, status) VALUES (?,?,?,?,?,?,?,?, 'active')",
-                    (
-                        norm,
-                        now,
-                        ttl,
-                        now + ttl,
-                        self.s.mode,
-                        source,
-                        detector,
-                        reason[:300],
-                    ),
-                )
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "INSERT INTO ip_blocks (ip, ts, ttl, expires, mode, source, detector, "
+                        "reason, status) VALUES (?,?,?,?,?,?,?,?, 'active')",
+                        (
+                            norm,
+                            now,
+                            ttl,
+                            now + ttl,
+                            self.s.mode,
+                            source,
+                            detector,
+                            reason[:300],
+                        ),
+                    )
+            except sqlite3.Error as exc:
+                # Enforced but unrecorded would be invisible in the UI: undo it.
+                try:
+                    self._helper("del", norm)
+                except BlockRefused as undo_exc:
+                    self._log(
+                        f"BLOCK OF {norm} IS LIVE BUT UNRECORDED ({exc}); rollback "
+                        f"failed ({undo_exc}); run: sysmon-block del {norm}",
+                        "error",
+                    )
+                raise BlockRefused(f"could not record block of {norm}: {exc}") from exc
             self._log(f"BLOCKED {norm} for {ttl}s ({source}: {reason})", "warning")
             return {"id": cur.lastrowid, "ip": norm, "ttl": ttl, "expires": now + ttl}
         finally:
@@ -464,12 +490,12 @@ class BlockManager:
         minutes = QUARANTINE_DEFAULT_MIN if minutes is None else int(minutes)
         if not 1 <= minutes <= QUARANTINE_MAX_MIN:
             raise BlockRefused(f"minutes must be between 1 and {QUARANTINE_MAX_MIN}")
-        out = self._helper("quarantine", "on", str(minutes * 60))
+        out = self._helper("quarantine", "on", str(minutes * 60), timeout=90)
         self._log(f"QUARANTINE engaged for {minutes} min by {by}", "error")
         return {"active": True, "until": out.get("until"), "minutes": minutes}
 
     def quarantine_release(self, by: str = "manual") -> dict:
         """Restore internet immediately."""
-        self._helper("quarantine", "off")
+        self._helper("quarantine", "off", timeout=60)
         self._log(f"QUARANTINE released by {by}", "success")
         return {"active": False}
