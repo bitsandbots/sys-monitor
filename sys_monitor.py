@@ -1162,6 +1162,23 @@ def get_llm_services() -> list:
     return results
 
 
+def get_agent_wiring() -> dict:
+    """Which agentic CLI on this host is wired to which gateway model alias,
+    and whether that alias actually resolves — via `cc-configure-agent --list
+    --json` (fleet-ops/cc-configure-agent.py), the same tool `cc-load` uses.
+    Not present on non-Tier-P hosts, so this degrades to unavailable rather
+    than erroring.
+    """
+    raw = _run("cc-configure-agent --list --json", timeout=8)
+    if not raw:
+        return {"available": False, "agents": []}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"available": False, "agents": []}
+    return {"available": True, "agents": data.get("agents", [])}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Security Monitoring — hiddenscope integration
 #
@@ -1743,6 +1760,15 @@ def api_llm():
     report whether each one is actively serving a model — and which.
     """
     return jsonify(get_llm_services())
+
+
+@app.route("/api/agent-wiring")
+@require_auth
+def api_agent_wiring():
+    """Per-agent gateway wiring on this host — which model each agentic CLI
+    (Claude Code, OpenCode, Pi, Hermes, Aider, cc-platform) points at, and
+    whether that alias resolves — via cc-configure-agent."""
+    return jsonify(get_agent_wiring())
 
 
 @app.route("/api/security")
