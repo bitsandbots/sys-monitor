@@ -520,7 +520,7 @@ Returns `404` with `{"success": false, "error": "entry not found"}` if nothing i
 Allowlist changes persist to `HIDDENSCOPE_ALLOWLIST_FILE` (default `./hiddenscope_allowlist.json`).
 
 #### `GET /api/security/baseline`
-`{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}`.
+`{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}`. Requires the bearer token when one is configured.
 
 #### `POST /api/security/baseline`
 Requires the bearer token when one is configured. Snapshots current connections and listeners to `HIDDENSCOPE_BASELINE_FILE`; from then on `GET /api/security` adds `baseline.new_listener` / `baseline.new_external` findings for anything not in the snapshot. Returns `{"success": true, "captured_at": "..."}`.

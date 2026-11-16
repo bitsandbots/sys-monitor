@@ -258,7 +258,7 @@ Full hiddenscope security status — findings, actionable count, flagged listene
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/security/baseline` | `{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}` |
+| `GET` | `/api/security/baseline` | `{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}`. Requires the bearer token when one is configured. |
 | `POST` | `/api/security/baseline` | Requires the bearer token when one is set. Snapshots current connections/listeners to `HIDDENSCOPE_BASELINE_FILE`; afterwards `/api/security` adds `baseline.new_listener` / `baseline.new_external` findings for anything not in the snapshot. Returns `{"success": true, "captured_at": "..."}` |
 
 ### Security Allowlist

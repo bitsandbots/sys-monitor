@@ -29,6 +29,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from collections import defaultdict, deque
 from datetime import datetime
 from functools import wraps
@@ -453,10 +454,13 @@ def _csrf_guard():
         abort(400, description="Host not allowed")
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return
-    expected = f"{request.scheme}://{request.host}"
     source = request.headers.get("Origin") or request.headers.get("Referer")
-    if source and not source.startswith(expected):
-        abort(403, description="Cross-origin request blocked")
+    if source:
+        # Exact scheme+host[:port] match; a prefix test lets
+        # http://sysmon.lan.evil.com pass for http://sysmon.lan.
+        src = urlparse(source)
+        if (src.scheme, src.netloc) != (request.scheme, request.host):
+            abort(403, description="Cross-origin request blocked")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -471,7 +475,11 @@ def _read_file(path: str, default: str = "") -> str:
 
 
 def _run(cmd: str, timeout: int = 5) -> str:
-    """Run a shell command and return stdout."""
+    """Run a shell command and return stdout.
+
+    ``cmd`` runs through a shell: never put request-derived data in it. Service
+    names are safe only because they come from ``CONFIG["services"]``.
+    """
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout
@@ -2678,7 +2686,9 @@ def api_blocks():
             "enabled": _blocker.s.mode != "off",
             "mode": _blocker.s.mode,
             "active": _blocker.active(),
-            "history": _blocker.history(int(request.args.get("limit", "50") or 50)),
+            "history": _blocker.history(
+                max(1, min(request.args.get("limit", 50, type=int), 500))
+            ),
         }
     )
 
@@ -2784,6 +2794,9 @@ def api_blocks_approve():
     credential, and it only authorizes blocking the one address it names.
     """
     mgr = _blocker_or_503()
+    client = _client_ip()
+    if _auth_locked_out(client):
+        abort(429, description="Too many failed attempts")
     ip = request.args.get("ip", "")
     sig = request.args.get("sig", "")
     try:
@@ -2791,7 +2804,10 @@ def api_blocks_approve():
     except ValueError:
         abort(400, description="bad expiry")
     if not _approval_key or not _ib.verify_approval(_approval_key, ip, exp, sig):
-        log_event(f"Invalid/expired block approval for {ip!r} from {_client_ip()}", "warning")
+        # Unauthenticated route: cap the attacker-controlled text and count the
+        # failure toward the same per-IP lockout as bad bearer tokens.
+        _auth_record_failure(client)
+        log_event(f"Invalid/expired block approval for {ip[:64]!r} from {client}", "warning")
         abort(403, description="invalid or expired approval")
     try:
         res = mgr.block(ip, "operator approval via notification", source="manual")
@@ -2887,7 +2903,7 @@ def api_services_add():
     name = data.get("name", "").strip()
     if not name:
         return jsonify({"success": False, "error": "Service name required"}), 400
-    if not re.match(r"^[a-zA-Z0-9@._:-]+$", name):
+    if not re.fullmatch(r"[a-zA-Z0-9@._:-]+", name):
         return jsonify({"success": False, "error": "Invalid service name"}), 400
     if name in CONFIG["services"]:
         return jsonify({"success": False, "error": f"'{name}' already monitored"}), 409
@@ -2922,7 +2938,7 @@ def api_services_rename(svc):
     new_name = data.get("name", "").strip()
     if not new_name:
         return jsonify({"success": False, "error": "New name required"}), 400
-    if not re.match(r"^[a-zA-Z0-9@._:-]+$", new_name):
+    if not re.fullmatch(r"[a-zA-Z0-9@._:-]+", new_name):
         return jsonify({"success": False, "error": "Invalid service name"}), 400
     if svc not in CONFIG["services"]:
         return jsonify({"success": False, "error": f"'{svc}' not in list"}), 404
@@ -3100,6 +3116,7 @@ def api_security_allowlist_remove():
 
 
 @app.route("/api/security/baseline", methods=["GET"])
+@require_auth
 def api_security_baseline_get():
     """Report whether a baseline exists, and when/where it was captured."""
     if not HIDDENSCOPE_AVAILABLE:

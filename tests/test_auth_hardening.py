@@ -110,3 +110,59 @@ def test_security_headers_present():
     assert r.headers["X-Content-Type-Options"] == "nosniff"
     assert r.headers["X-Frame-Options"] == "DENY"
     assert r.headers["Cache-Control"] == "no-store"
+
+
+# ── CSRF: Origin/Referer must match scheme+host exactly ─────────────────
+
+
+def _post_with_source(header, value, host="sysmon.lan"):
+    client = sys_monitor.app.test_client()
+    return client.post(
+        "/api/blocks/flush",  # any mutating route; 503/401 means the guard passed
+        headers={header: value, "Authorization": f"Bearer {TOKEN}"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1", "HTTP_HOST": host},
+    )
+
+
+@pytest.mark.parametrize(
+    "header,value,host,blocked",
+    [
+        ("Origin", "http://sysmon.lan", "sysmon.lan", False),
+        ("Referer", "http://sysmon.lan/some/page", "sysmon.lan", False),
+        ("Origin", "http://sysmon.lan:8585", "sysmon.lan:8585", False),
+        ("Origin", "http://sysmon.lan.evil.com", "sysmon.lan", True),
+        ("Origin", "http://sysmon.lan:8080", "sysmon.lan", True),
+        ("Origin", "https://sysmon.lan", "sysmon.lan", True),
+        ("Referer", "http://sysmon.lan.evil.com/x", "sysmon.lan", True),
+    ],
+)
+def test_csrf_origin_exact_match(monkeypatch, header, value, host, blocked):
+    monkeypatch.setitem(sys_monitor.CONFIG, "strict_actions", False)
+    monkeypatch.setattr(sys_monitor, "_ALLOWED_HOSTS", {"sysmon.lan"})
+    r = _post_with_source(header, value, host)
+    assert (r.status_code == 403) is blocked
+
+
+def test_csrf_no_origin_header_allowed(monkeypatch):
+    monkeypatch.setattr(sys_monitor, "_ALLOWED_HOSTS", {"sysmon.lan"})
+    r = sys_monitor.app.test_client().post(
+        "/api/blocks/flush",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1", "HTTP_HOST": "sysmon.lan"},
+    )
+    assert r.status_code != 403
+
+
+# ── Baseline GET is behind the bearer token ─────────────────────────────
+
+
+def test_baseline_get_requires_token():
+    client = sys_monitor.app.test_client()
+    env = {"REMOTE_ADDR": "8.8.8.8", "HTTP_HOST": "localhost"}
+    assert client.get("/api/security/baseline", environ_overrides=env).status_code == 401
+    ok = client.get(
+        "/api/security/baseline",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        environ_overrides=env,
+    )
+    assert ok.status_code == 200
