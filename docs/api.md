@@ -153,7 +153,11 @@ Per-interface stats with throughput rates.
       "rx_bytes": 1048576000,
       "tx_bytes": 524288000,
       "rx_mb": 1000.0,
-      "tx_mb": 500.0
+      "tx_mb": 500.0,
+      "rx_errors": 0,
+      "tx_errors": 0,
+      "rx_dropped": 0,
+      "tx_dropped": 0
     }
   ],
   "rates": {
@@ -162,7 +166,83 @@ Per-interface stats with throughput rates.
 }
 ```
 
-> `rates` values are bytes/sec since the previous call.
+> `rates` values are bytes/sec since the previous call. The `*_errors` / `*_dropped` fields are cumulative kernel counters from `/sys/class/net/<if>/statistics/`.
+
+---
+
+### Health Check
+
+#### `GET /healthz`
+Unauthenticated. `200 {"ok": true, "threads": [...], "dead": []}` when every started background thread (history, alerting, security watcher) is alive; `503` with the dead ones listed otherwise. Use this for supervisors/uptime checks; `/api/ping` only proves the web thread is up.
+
+---
+
+### Containers
+
+#### `GET /api/containers`
+Read-only Docker view. Disabled (`{"enabled": false, "daemons": []}`) unless `SYSMONITOR_DOCKER_SOCKETS` is set. Only `GET /containers/json?all=1` is ever issued. An unreachable daemon is reported with `available:false` and an `error`, not a 500. An unhealthy or restarting container raises a `container:<name>` outbound alert.
+
+```json
+{"enabled": true, "daemons": [{"socket": "/var/run/docker.sock", "available": true, "error": null,
+  "containers": [{"name": "web", "image": "nginx", "state": "running", "status": "Up 2 hours (healthy)", "health": "healthy"}]}]}
+```
+
+---
+
+### History
+
+#### `GET /api/history`
+SQLite-backed metric history. Disabled (`{"enabled": false, "points": []}`) unless a history DB is configured.
+
+- `GET /api/history` — lists recorded metric names.
+- `GET /api/history?metric=<name>&range=1h|6h|24h|7d` — series of `[unix_ts, avg_value]`, averaged into at most 500 buckets. Unknown `range` → 400.
+
+Metrics: `cpu_percent`, `cpu_temp_c`, `mem_percent`, `net_rx_bps`, `net_tx_bps` (physical interfaces only), and per-instance `disk_used_percent:<mount>`, `disk_busy_percent|disk_read_bps|disk_write_bps:<disk>`, `gpu_util_percent|gpu_vram_percent|gpu_temp_c|gpu_power_w:<index>`.
+
+```json
+{"enabled": true, "metric": "cpu_percent", "range": "24h", "points": [[1763136000, 4.2], [1763136180, 6.8]]}
+```
+
+---
+
+### Alerts
+
+#### `GET /api/alerts`
+Currently-firing outbound alerts and recent transition history (newest first, max 200). `enabled` is false when no webhook/ntfy destination is configured. See `docs/alerts.md`.
+
+```json
+{"enabled": true,
+ "active": [{"rule": "disk:/", "severity": "warning", "message": "Disk / at 93% (4100 MB free)"}],
+ "history": [{"ts": 1763136316.2, "event": "alert", "rule": "disk:/", "severity": "warning", "message": "..."}]}
+```
+
+---
+
+### Disk I/O
+
+#### `GET /api/diskio`
+Per-disk throughput since the previous call (first call reports zeros). Partitions, loop, ram, zram and device-mapper devices are omitted.
+
+```json
+{"disks": {"nvme0n1": {"read_bps": 0, "write_bps": 4092, "read_iops": 0.0, "write_iops": 1.0, "busy_percent": 0.3}}}
+```
+
+---
+
+### GPU
+
+#### `GET /api/gpu`
+NVIDIA GPU stats via `nvidia-smi`. When it is missing or fails: `{"available": false, "gpus": [], "processes": []}` (the dashboard hides the GPU card). Fields that report `[N/A]` are `null`.
+
+```json
+{
+  "available": true,
+  "gpus": [{"index": 0, "name": "NVIDIA GeForce RTX 5070", "util_percent": 12.0,
+            "mem_used_mb": 6978.0, "mem_total_mb": 12227.0, "mem_percent": 57.1,
+            "temp_c": 30.0, "power_w": 5.2, "power_limit_w": 250.0}],
+  "processes": [{"pid": 3735779, "name": "/usr/local/lib/ollama/llama-server", "mem_used_mb": 6936.0}]
+}
+```
 
 ---
 
@@ -440,7 +520,7 @@ Returns `404` with `{"success": false, "error": "entry not found"}` if nothing i
 Allowlist changes persist to `HIDDENSCOPE_ALLOWLIST_FILE` (default `./hiddenscope_allowlist.json`).
 
 #### `GET /api/security/baseline`
-`{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}`.
+`{"captured": false}` or `{"captured": true, "captured_at": "<ISO timestamp>"}`. Requires the bearer token when one is configured.
 
 #### `POST /api/security/baseline`
 Requires the bearer token when one is configured. Snapshots current connections and listeners to `HIDDENSCOPE_BASELINE_FILE`; from then on `GET /api/security` adds `baseline.new_listener` / `baseline.new_external` findings for anything not in the snapshot. Returns `{"success": true, "captured_at": "..."}`.
@@ -681,6 +761,8 @@ Request body (optional):
 {"subnet": "192.168.1.0/24", "port": 8585}
 ```
 
+**mDNS mode:** `{"method": "mdns"}` lists nodes advertising `_sysmonitor._tcp` instead of scanning (a few seconds, no /24 sweep). It shells out to `avahi-browse -rpt` (package `avahi-utils`) on the hub; without it the route returns `501`. Entries have the same shape as a scan plus `version`, and the response includes `"method": "mdns"`. Nodes advertise themselves when `install.sh` finds `avahi-daemon` (it writes `/etc/avahi/services/sys-monitor.service`, template in `contrib/avahi/`). mDNS does not cross subnets/VLANs; use a subnet scan or add the node by IP for those. Any other `method` value → 400.
+
 Response:
 ```json
 {
@@ -734,3 +816,58 @@ If a node is unreachable, proxy routes return `502` with `{"error": "unreachable
 | `404` | Not found — service or node doesn't exist |
 | `409` | Conflict — duplicate service name |
 | `502` | Bad gateway — hub cannot reach the node |
+
+
+## `GET /api/threats`
+
+Log-driven threat findings (see `docs/threat-detection.md`). Query:
+`range` (1h, 6h, 24h, 7d, 30d; default 24h), `ip`, `severity`
+(info|warning|critical), `limit` (max 1000). Returns `{"enabled": false}` when
+no history DB is configured. Requires auth like other endpoints.
+
+## IP blocker and outbound quarantine
+
+Modes, safety rules and setup are in [`threat-detection.md`](threat-detection.md#ip-blocker).
+Mutating routes (`POST /api/blocks`, `DELETE /api/blocks/<ip>`, `POST /api/blocks/flush`,
+`POST`/`DELETE /api/quarantine`) need the bearer token from **every** client, the
+`SYSMONITOR_LAN_NO_AUTH` bypass does not apply. With no `SYSMONITOR_TOKEN` set they accept
+loopback callers only (`403` otherwise). `SYSMONITOR_STRICT_ACTIONS=false` restores plain auth.
+They also honour `SYSMONITOR_CONFIG_TOKEN` (`X-Config-Token` header) when set. When threat
+detection is disabled they return `503`. Refusals are `400 {"success": false, "error": "..."}`.
+
+### `GET /api/blocks`
+`{"enabled": bool, "mode": "off|dry-run|manual|auto", "active": [...], "history": [...]}`.
+`?limit=N` sizes `history` (default 50, clamped to 1-500; non-numeric values use the default).
+Each row: `id, ip, ts, ttl, expires, mode, source, detector, reason, status, removed_ts, removed_by`.
+When the blocker is unavailable: `{"enabled": false, "mode": "off", "active": [], "history": []}`.
+
+### `POST /api/blocks`
+Body `{"ip": "...", "reason"?: "...", "ttl"?: seconds, "force"?: bool}`. Public IPs only.
+Without `ttl` the repeat-offender ladder applies (1 h, 24 h, 7 d). Success:
+`{"success": true, "id", "ip", "ttl", "expires"}`. `400` when the address is not blockable
+(LAN, loopback, allowlisted), the cap is hit, or the mode is `off`/`dry-run`.
+
+### `DELETE /api/blocks/<ip>`
+Unblock one address, in every mode. `{"success": true, "ip": "..."}`.
+
+### `POST /api/blocks/flush`
+Remove every block. `{"success": true, "removed": N}`.
+
+### `POST /api/blocks/approve?ip=&exp=&sig=`
+One-tap approval from a notification. **Not behind the bearer token:** the HMAC signature
+(single IP, expiry `exp`, one-hour lifetime) is the credential. A bad or expired signature is
+`403` and counts toward the per-IP auth lockout (`429` while locked out). A bad `exp` is `400`.
+Success: `{"success": true, "id", "ip", "ttl", "expires"}`.
+
+### `GET /api/quarantine`
+`{"available": bool, "active": bool, "until"?: ..., "remaining"?: seconds}`. `available` is
+`false` when the root helper is missing.
+
+### `POST /api/quarantine`
+Cut outbound internet (LAN, loopback and SSH replies stay up). Body
+`{"confirm": "QUARANTINE", "minutes"?: 1-60}` (default 15). Auto-reverts. Success:
+`{"success": true, "active": true, "until": ..., "minutes": N}`. A missing or wrong `confirm`
+is `400`. A critical alert is sent first.
+
+### `DELETE /api/quarantine`
+Restore outbound internet now. `{"success": true, "active": false}`.

@@ -1,0 +1,13 @@
+# /etc/systemd/system/sysmon-block-restore.service
+# Rebuilds the nftables blocklist after a reboot, before services listen.
+[Unit]
+Description=Restore SysMonitor IP blocklist
+After=network-pre.target
+Before=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sysmon-block init
+
+[Install]
+WantedBy=multi-user.target

@@ -55,6 +55,17 @@ _pip_install() {
   pip3 install --quiet $break_flag --ignore-installed -r "$req_file"
 }
 
+# Advertise the node over mDNS (graceful no-op without avahi-daemon).
+_advertise_mdns() {
+  local port="$1" ver
+  [[ -d /etc/avahi/services ]] || { info "mDNS: avahi not installed — skipping advertisement"; return 0; }
+  ver="$(grep -oP '^VERSION\s*=\s*"\K[^"]+' sys_monitor.py 2>/dev/null | head -1)"
+  sed -e "s/@PORT@/${port}/" -e "s/@VERSION@/${ver:-unknown}/" \
+    contrib/avahi/sys-monitor.service > /etc/avahi/services/sys-monitor.service \
+    && ok "mDNS: advertising _sysmonitor._tcp on port ${port}" \
+    || warn "mDNS: could not write /etc/avahi/services/sys-monitor.service"
+}
+
 # Open a firewall port via ufw or firewalld (graceful no-op if neither present)
 _open_port() {
   local port="$1"
@@ -156,6 +167,11 @@ do_uninstall() {
 
   systemctl daemon-reload
 
+  if [[ -f /etc/avahi/services/sys-monitor.service ]]; then
+    rm /etc/avahi/services/sys-monitor.service
+    ok "Removed mDNS advertisement"
+  fi
+
   _close_port "$NODE_PORT"
   _close_port "$HUB_PORT"
 
@@ -232,6 +248,7 @@ install_node() {
   ok "Dependencies installed"
 
   _open_port "$NODE_PORT"
+  _advertise_mdns "$NODE_PORT"
   cp sys-monitor.service /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable "$NODE_SERVICE"

@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # 'ci/**' lets a self-hosted Gitea Actions instance build PR heads that a sync
+    # script pushes there as ci/pr-N. No effect on GitHub-hosted runs.
+    branches: [main, 'ci/**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:

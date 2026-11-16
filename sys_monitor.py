@@ -16,21 +16,35 @@ CoreConduit Consulting Services — https://coreconduit.com
 License: MIT
 """
 
+import hmac
+import http.client
 import ipaddress
 import json
 import os
 import re
+import socket
+import sqlite3
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
-from collections import deque
+from urllib.parse import urlparse
+from collections import defaultdict, deque
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, abort
+
+try:
+    import ip_block as _ib
+    import threat_detect as _td
+
+    THREAT_AVAILABLE = True
+except ImportError:  # pragma: no cover — optional companion file
+    _td = None
+    THREAT_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -45,6 +59,13 @@ CONFIG = {
     "debug": os.getenv("SYSMONITOR_DEBUG", "false").lower() == "true",
     "auth_token": os.getenv("SYSMONITOR_TOKEN", ""),
     "config_token": os.getenv("SYSMONITOR_CONFIG_TOKEN", ""),
+    # Opt-in: clients on loopback / private LAN ranges skip the token (put a
+    # firewall in front of the port). Off by default, so a token is required
+    # from every client unless SYSMONITOR_LAN_NO_AUTH=true.
+    "lan_no_auth": os.getenv("SYSMONITOR_LAN_NO_AUTH", "false").lower() == "true",
+    # Dangerous actions (blocklist changes, quarantine) never take the LAN bypass:
+    # they need the bearer token from every client (see require_strict_auth).
+    "strict_actions": os.getenv("SYSMONITOR_STRICT_ACTIONS", "true").lower() == "true",
     "services": [
         s.strip()
         for s in os.getenv(
@@ -54,6 +75,51 @@ CONFIG = {
         if s.strip()
     ],
     "refresh_interval": int(os.getenv("SYSMONITOR_REFRESH", "2")),
+    # Outbound alerting (disabled unless at least one destination is set)
+    "alert_webhook_url": os.getenv("SYSMONITOR_ALERT_WEBHOOK_URL", ""),
+    "alert_ntfy_url": os.getenv("SYSMONITOR_ALERT_NTFY_URL", ""),
+    "alert_interval": float(os.getenv("SYSMONITOR_ALERT_INTERVAL", "30")),
+    "alert_confirm_samples": int(os.getenv("SYSMONITOR_ALERT_CONFIRM", "2")),
+    "alert_disk_percent": float(os.getenv("SYSMONITOR_ALERT_DISK_PERCENT", "90")),
+    "alert_gpu_temp_c": float(os.getenv("SYSMONITOR_ALERT_GPU_TEMP", "83")),
+    "alert_vram_percent": float(os.getenv("SYSMONITOR_ALERT_VRAM_PERCENT", "95")),
+    # Metrics history (SQLite). Enabled when a DB path is set explicitly or
+    # systemd provides STATE_DIRECTORY (StateDirectory=sys-monitor).
+    "history_db": os.getenv("SYSMONITOR_HISTORY_DB")
+    or (
+        str(Path(os.environ["STATE_DIRECTORY"].split(":")[0]) / "metrics.db")
+        if os.getenv("STATE_DIRECTORY")
+        else ""
+    ),
+    "history_interval": float(os.getenv("SYSMONITOR_HISTORY_INTERVAL", "60")),
+    "history_days": float(os.getenv("SYSMONITOR_HISTORY_DAYS", "7")),
+    # Docker monitoring is opt-in: comma-separated unix socket paths. Reading
+    # a Docker socket needs access that is root-equivalent on rootful daemons.
+    "docker_sockets": [
+        x.strip() for x in os.getenv("SYSMONITOR_DOCKER_SOCKETS", "").split(",") if x.strip()
+    ],
+    "alert_ntfy_token": os.getenv("SYSMONITOR_ALERT_NTFY_TOKEN", ""),
+    # Log-driven threat detection (needs the history DB for storage).
+    "threat_enabled": os.getenv("SYSMONITOR_THREAT", "true").lower() == "true",
+    "threat_interval": float(os.getenv("SYSMONITOR_THREAT_INTERVAL", "10")),
+    "threat_learning_days": float(os.getenv("SYSMONITOR_THREAT_LEARNING_DAYS", "7")),
+    "threat_retention_days": float(os.getenv("SYSMONITOR_THREAT_RETENTION_DAYS", "30")),
+    "threat_notify_per_hour": int(os.getenv("SYSMONITOR_THREAT_NOTIFY_PER_HOUR", "20")),
+    "threat_access_logs": [
+        x.strip()
+        for x in os.getenv("SYSMONITOR_ACCESS_LOGS", "/var/log/nginx/access.log").split(",")
+        if x.strip()
+    ],
+    # Extra IPs/CIDRs that must never be flagged blockable (LAN is implicit).
+    "threat_allowlist": os.getenv("SYSMONITOR_THREAT_ALLOWLIST", ""),
+    # IP blocker: off | dry-run | manual | auto (enforcement via root helper).
+    "block_mode": os.getenv("SYSMONITOR_BLOCK_MODE", "off").lower(),
+    "block_helper": os.getenv("SYSMONITOR_BLOCK_HELPER", "/usr/local/sbin/sysmon-block"),
+    "block_max_active": int(os.getenv("SYSMONITOR_BLOCK_MAX_ACTIVE", "200")),
+    "block_max_per_hour": int(os.getenv("SYSMONITOR_BLOCK_MAX_PER_HOUR", "10")),
+    # Base URL phones/browsers use to reach this agent; enables the one-tap
+    # "Block" button on ntfy notifications (signed, single-IP, 1h expiry).
+    "public_url": os.getenv("SYSMONITOR_PUBLIC_URL", "").rstrip("/"),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -201,16 +267,118 @@ def detect_system():
 # ═══════════════════════════════════════════════════════════════════════════
 # Auth Middleware
 # ═══════════════════════════════════════════════════════════════════════════
+_AUTH_FAIL_MAX = 10  # failed attempts allowed per window, per client IP
+_AUTH_FAIL_WINDOW = 60  # seconds
+_auth_failures: "defaultdict[str, deque]" = defaultdict(deque)
+_auth_lock = threading.Lock()
+
+
+def _client_ip() -> str:
+    return request.remote_addr or "unknown"
+
+
+def _is_lan_client(ip: str) -> bool:
+    """True for loopback, RFC1918/ULA private, and link-local client addresses."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
+def _auth_locked_out(ip: str) -> bool:
+    """True if ip has hit the failed-auth limit inside the window."""
+    now = time.time()
+    with _auth_lock:
+        q = _auth_failures[ip]
+        while q and now - q[0] > _AUTH_FAIL_WINDOW:
+            q.popleft()
+        return len(q) >= _AUTH_FAIL_MAX
+
+
+def _auth_record_failure(ip: str) -> None:
+    with _auth_lock:
+        _auth_failures[ip].append(time.time())
+    _threat_push_login_fail(ip)
+
+
+def _verify_bearer(token: str, ip: str) -> None:
+    """Abort 429/401 unless the request carries the bearer token.
+
+    Constant-time compare, per-IP lockout, failures logged.
+    """
+    if _auth_locked_out(ip):
+        log_event(f"Auth lockout: {ip}", "warning")
+        abort(429, description="Too many failed attempts")
+    supplied = request.headers.get("Authorization", "")
+    expected = f"Bearer {token}"
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        _auth_record_failure(ip)
+        log_event(
+            f"Auth failed: {request.method} {request.path} from {ip}",
+            "warning",
+        )
+        abort(401, description="Unauthorized")
+
+
+def _is_loopback_client(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback
+
+
 def require_auth(f):
-    """Optional bearer-token authentication."""
+    """Bearer-token authentication.
+
+    With a token configured, every request must present it (constant-time
+    compare, per-IP lockout, failures logged); loopback/private-LAN clients are
+    exempt only when SYSMONITOR_LAN_NO_AUTH=true. With no token configured, auth is off (as in
+    upstream v2.5.1).
+    """
 
     @wraps(f)
     def decorated(*args, **kwargs):
         token = CONFIG["auth_token"]
+        ip = _client_ip()
+        if token and CONFIG["lan_no_auth"] and _is_lan_client(ip):
+            return f(*args, **kwargs)
         if token:
-            auth = request.headers.get("Authorization", "")
-            if auth != f"Bearer {token}":
-                abort(401, description="Unauthorized")
+            _verify_bearer(token, ip)
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+def require_strict_auth(f):
+    """Bearer token from EVERY client, for actions that can hurt (blocklist
+    changes, quarantine): the SYSMONITOR_LAN_NO_AUTH bypass does not apply.
+
+    With no token configured the action is available to loopback clients only,
+    so an unauthenticated LAN device can never trigger it. Set
+    SYSMONITOR_STRICT_ACTIONS=false to fall back to plain ``require_auth``.
+    The dashboard asks for the token once per browser session (sessionStorage).
+    """
+    legacy = require_auth(f)
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not CONFIG["strict_actions"]:
+            return legacy(*args, **kwargs)
+        token = CONFIG["auth_token"]
+        ip = _client_ip()
+        if token:
+            _verify_bearer(token, ip)
+        elif not _is_loopback_client(ip):
+            abort(
+                403,
+                description="This action needs SYSMONITOR_TOKEN when used from the network",
+            )
         return f(*args, **kwargs)
 
     return decorated
@@ -235,22 +403,64 @@ def require_config_auth(f):
         token = CONFIG["config_token"]
         if token:
             supplied = request.headers.get("X-Config-Token", "")
-            if supplied != token:
+            if not hmac.compare_digest(supplied.encode(), token.encode()):
                 abort(401, description="Unauthorized (config token required)")
         return f(*args, **kwargs)
 
     return decorated
 
 
+def _allowed_hosts() -> set:
+    hosts = {
+        h.strip().lower()
+        for h in os.getenv("SYSMONITOR_ALLOWED_HOSTS", "").split(",")
+        if h.strip()
+    }
+    name = socket.gethostname().lower()
+    hosts |= {"localhost", name, f"{name}.local"}
+    return hosts
+
+
+_ALLOWED_HOSTS = _allowed_hosts()
+
+
+def _host_ok(hostport: str) -> bool:
+    """Accept IP literals and known names only (blocks DNS rebinding)."""
+    host = hostport.strip().lower()
+    if host.startswith("["):
+        host = host[1 : host.find("]")]
+    elif host.count(":") == 1:
+        host = host.split(":")[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return host in _ALLOWED_HOSTS
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
+
+
 @app.before_request
 def _csrf_guard():
-    """Reject cross-origin state-changing requests (CSRF via a plain form POST)."""
+    """Reject DNS rebinding (bad Host) and cross-origin state-changing requests."""
+    if not _host_ok(request.host):
+        abort(400, description="Host not allowed")
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return
-    expected = f"{request.scheme}://{request.host}"
     source = request.headers.get("Origin") or request.headers.get("Referer")
-    if source and not source.startswith(expected):
-        abort(403, description="Cross-origin request blocked")
+    if source:
+        # Exact scheme+host[:port] match; a prefix test lets
+        # http://sysmon.lan.evil.com pass for http://sysmon.lan.
+        src = urlparse(source)
+        if (src.scheme, src.netloc) != (request.scheme, request.host):
+            abort(403, description="Cross-origin request blocked")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -265,7 +475,11 @@ def _read_file(path: str, default: str = "") -> str:
 
 
 def _run(cmd: str, timeout: int = 5) -> str:
-    """Run a shell command and return stdout."""
+    """Run a shell command and return stdout.
+
+    ``cmd`` runs through a shell: never put request-derived data in it. Service
+    names are safe only because they come from ``CONFIG["services"]``.
+    """
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout
@@ -644,6 +858,10 @@ def get_network() -> dict:
             tx_rate = max(0, round((tx - prev["tx"]) / elapsed)) if elapsed > 0 else 0
             _net_prev[name] = {"rx": rx, "tx": tx}
 
+            def _stat(key: str, _n: str = name) -> int:
+                raw = _read_file(f"/sys/class/net/{_n}/statistics/{key}", "0")
+                return int(raw) if raw.isdigit() else 0
+
             interfaces.append(
                 {
                     "name": name,
@@ -654,11 +872,154 @@ def get_network() -> dict:
                     "tx_bytes": tx,
                     "rx_mb": round(rx / (1024 * 1024), 2),
                     "tx_mb": round(tx / (1024 * 1024), 2),
+                    "rx_errors": _stat("rx_errors"),
+                    "tx_errors": _stat("tx_errors"),
+                    "rx_dropped": _stat("rx_dropped"),
+                    "tx_dropped": _stat("tx_dropped"),
                 }
             )
             rates[name] = {"rx_rate": rx_rate, "tx_rate": tx_rate}
 
     return {"interfaces": interfaces, "rates": rates}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Disk I/O — Rate Tracking (/proc/diskstats)
+# ═══════════════════════════════════════════════════════════════════════════
+_SECTOR_BYTES = 512  # /proc/diskstats always counts 512-byte sectors
+_DISK_SKIP = re.compile(r"^(loop|ram|zram|dm-|sr|fd)\d*")
+_DISK_PART = re.compile(r"^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+)\d+$|^(nvme\d+n\d+|mmcblk\d+)p\d+$")
+_disk_lock = threading.Lock()
+_disk_prev: dict = {}
+_disk_prev_time = 0.0
+
+
+def _parse_diskstats(text: str) -> dict:
+    """Parse /proc/diskstats into whole-disk cumulative counters.
+
+    Args:
+        text: Raw contents of /proc/diskstats.
+
+    Returns:
+        Mapping of device name to read/write sector, op and io-time counters.
+        Partitions, loop, ram, zram and device-mapper devices are skipped.
+    """
+    disks = {}
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 14:
+            continue
+        name = f[2]
+        if _DISK_SKIP.match(name) or _DISK_PART.match(name):
+            continue
+        try:
+            disks[name] = {
+                "reads": int(f[3]),
+                "read_sectors": int(f[5]),
+                "writes": int(f[7]),
+                "write_sectors": int(f[9]),
+                "io_ms": int(f[12]),
+            }
+        except ValueError:
+            continue
+    return disks
+
+
+def get_disk_io() -> dict:
+    """Per-disk throughput (bytes/s), IOPS and busy % since the last call.
+
+    Returns:
+        {"disks": {name: {read_bps, write_bps, read_iops, write_iops,
+        busy_percent}}}. The first call after startup reports zero rates.
+    """
+    global _disk_prev_time
+    now = time.time()
+    current = _parse_diskstats(_read_file("/proc/diskstats"))
+    out = {}
+    with _disk_lock:
+        elapsed = now - _disk_prev_time if _disk_prev_time > 0 else 0.0
+        _disk_prev_time = now
+        for name, c in current.items():
+            prev = _disk_prev.get(name)
+            if prev is None or elapsed <= 0:
+                rates = dict(read_bps=0, write_bps=0, read_iops=0, write_iops=0, busy_percent=0.0)
+            else:
+                d = {k: max(0, c[k] - prev[k]) for k in c}
+                rates = {
+                    "read_bps": round(d["read_sectors"] * _SECTOR_BYTES / elapsed),
+                    "write_bps": round(d["write_sectors"] * _SECTOR_BYTES / elapsed),
+                    "read_iops": round(d["reads"] / elapsed, 1),
+                    "write_iops": round(d["writes"] / elapsed, 1),
+                    "busy_percent": min(100.0, round(d["io_ms"] / (elapsed * 10), 1)),
+                }
+            out[name] = rates
+        _disk_prev.clear()
+        _disk_prev.update(current)
+    return {"disks": out}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GPU — NVIDIA via nvidia-smi
+# ═══════════════════════════════════════════════════════════════════════════
+_GPU_QUERY = (
+    "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,"
+    "temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits"
+)
+_GPU_APPS_QUERY = (
+    "nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory "
+    "--format=csv,noheader,nounits"
+)
+
+
+def _num(val: str):
+    """Parse an nvidia-smi numeric field; '[N/A]' and junk become None."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_gpu() -> dict:
+    """NVIDIA GPU utilisation, VRAM, temperature, power and VRAM consumers.
+
+    Returns:
+        {"available": bool, "gpus": [...], "processes": [...]}. When
+        nvidia-smi is missing or fails, available is False and lists are
+        empty (graceful degrade, same as power_status on non-Pi hosts).
+    """
+    raw = _run(_GPU_QUERY, timeout=4)
+    gpus = []
+    for line in raw.splitlines():
+        f = [x.strip() for x in line.split(",")]
+        if len(f) < 8:
+            continue
+        used, total = _num(f[3]), _num(f[4])
+        gpus.append(
+            {
+                "index": int(f[0]) if f[0].isdigit() else len(gpus),
+                "name": f[1],
+                "util_percent": _num(f[2]),
+                "mem_used_mb": used,
+                "mem_total_mb": total,
+                "mem_percent": round(used / total * 100, 1) if used is not None and total else None,
+                "temp_c": _num(f[5]),
+                "power_w": _num(f[6]),
+                "power_limit_w": _num(f[7]),
+            }
+        )
+    if not gpus:
+        return {"available": False, "gpus": [], "processes": []}
+
+    procs = []
+    for line in _run(_GPU_APPS_QUERY, timeout=4).splitlines():
+        f = [x.strip() for x in line.split(",")]
+        if len(f) < 4 or not f[1].isdigit():
+            continue
+        procs.append(
+            {"pid": int(f[1]), "name": ",".join(f[2:-1]), "mem_used_mb": _num(f[-1])}
+        )
+    procs.sort(key=lambda p: p["mem_used_mb"] or 0, reverse=True)
+    return {"available": True, "gpus": gpus, "processes": procs}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1357,9 +1718,7 @@ def start_security_watcher() -> bool:
     """Start the watcher thread if hiddenscope is present and interval > 0."""
     if not HIDDENSCOPE_AVAILABLE or HIDDENSCOPE_WATCH_INTERVAL <= 0:
         return False
-    threading.Thread(
-        target=_security_watcher_loop, daemon=True, name="security-watcher"
-    ).start()
+    _spawn("security-watcher", _security_watcher_loop)
     return True
 
 
@@ -1552,6 +1911,674 @@ def get_log(limit: int = 100) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Background thread registry (for /healthz)
+# ═══════════════════════════════════════════════════════════════════════════
+_bg_threads: dict = {}
+
+
+def _spawn(name: str, target) -> None:
+    """Start a daemon thread and register it so /healthz can check liveness."""
+    t = threading.Thread(target=target, daemon=True, name=name)
+    t.start()
+    _bg_threads[name] = t
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Docker (read-only, opt-in)
+# ═══════════════════════════════════════════════════════════════════════════
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection over a unix socket (stdlib only)."""
+
+    def __init__(self, path: str, timeout: float = 3.0) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self._sock_path = path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self._sock_path)
+
+
+_HEALTH_RE = re.compile(r"\((healthy|unhealthy|health: starting)\)")
+
+
+def _docker_list(sock_path: str) -> list:
+    """GET /containers/json?all=1 from one daemon (the only call made).
+
+    Raises:
+        OSError / ValueError / http.client.HTTPException on failure.
+    """
+    conn = _UnixHTTPConnection(sock_path)
+    try:
+        conn.request("GET", "/containers/json?all=1")
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise ValueError(f"Docker API returned HTTP {resp.status}")
+        return json.loads(resp.read())
+    finally:
+        conn.close()
+
+
+def get_containers() -> dict:
+    """Container state per configured Docker daemon.
+
+    Returns:
+        {"enabled": bool, "daemons": [{"socket", "available", "error",
+        "containers": [{"name","image","state","status","health"}]}]}.
+        A daemon that cannot be reached is reported, never raised.
+    """
+    daemons = []
+    for sock in CONFIG["docker_sockets"]:
+        entry = {"socket": sock, "available": False, "error": None, "containers": []}
+        try:
+            for c in _docker_list(sock):
+                status = c.get("Status", "")
+                m = _HEALTH_RE.search(status)
+                entry["containers"].append(
+                    {
+                        "name": (c.get("Names") or ["?"])[0].lstrip("/"),
+                        "image": c.get("Image", ""),
+                        "state": c.get("State", "unknown"),
+                        "status": status,
+                        "health": m.group(1).replace("health: ", "") if m else None,
+                    }
+                )
+            entry["available"] = True
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        daemons.append(entry)
+    return {"enabled": bool(CONFIG["docker_sockets"]), "daemons": daemons}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Outbound Alerting
+# ═══════════════════════════════════════════════════════════════════════════
+_alert_lock = threading.Lock()
+_alert_active: dict = {}  # rule_id -> {"severity","message"} while firing
+_alert_streak: dict = {}  # rule_id -> (consecutive_bad_samples)
+_alert_history: deque = deque(maxlen=200)
+
+
+def _collect_alert_conditions() -> dict:
+    """Evaluate every alert rule against live metrics.
+
+    Returns:
+        Mapping of rule_id to (severity, message) for each rule that is
+        currently violated. Rules whose data source is unavailable are
+        omitted, so a failed read never looks like a recovery.
+    """
+    bad: dict = {}
+    temp = get_temperature_status()
+    if temp.get("level") in ("warning", "critical", "throttling"):
+        sev = "warning" if temp["level"] == "warning" else "critical"
+        bad["cpu_temp"] = (sev, temp.get("message") or f"CPU temperature {temp['level']}")
+
+    for d in get_storage():
+        if d["percent"] >= CONFIG["alert_disk_percent"]:
+            bad[f"disk:{d['mount']}"] = (
+                "warning",
+                f"Disk {d['mount']} at {d['percent']}% ({d['avail_mb']} MB free)",
+            )
+
+    gpu = get_gpu()
+    for g in gpu["gpus"]:
+        if g["temp_c"] is not None and g["temp_c"] >= CONFIG["alert_gpu_temp_c"]:
+            bad[f"gpu_temp:{g['index']}"] = (
+                "critical",
+                f"GPU {g['index']} ({g['name']}) at {g['temp_c']:.0f}°C",
+            )
+        if g["mem_percent"] is not None and g["mem_percent"] >= CONFIG["alert_vram_percent"]:
+            bad[f"vram:{g['index']}"] = (
+                "warning",
+                f"GPU {g['index']} VRAM at {g['mem_percent']:.0f}%",
+            )
+
+    for svc in get_critical_services_status():
+        name = svc.get("name") or svc.get("service") or str(svc)
+        bad[f"service:{name}"] = ("critical", f"Critical service down: {name}")
+
+    if CONFIG["docker_sockets"]:
+        for d in get_containers()["daemons"]:
+            for c in d["containers"]:
+                if c["state"] == "restarting" or c["health"] == "unhealthy":
+                    bad[f"container:{c['name']}"] = (
+                        "warning",
+                        f"Container {c['name']} is {c['health'] or c['state']}",
+                    )
+
+    if HIDDENSCOPE_AVAILABLE:
+        sec = get_security_status()
+        if sec.get("available") and sec.get("actionable_count", 0) > 0:
+            bad["security"] = (
+                "critical",
+                f"{sec['actionable_count']} actionable security finding(s)",
+            )
+    return bad
+
+
+def _send_alert(event: str, rule: str, severity: str, message: str, actions: str = "") -> None:
+    """Deliver one alert to every configured destination (best effort).
+
+    Failures are logged to the event log and swallowed: an unreachable
+    receiver must never stall the sampler or crash the agent.
+    """
+    host = socket.gethostname()
+    payload = {
+        "event": event,
+        "rule": rule,
+        "severity": severity,
+        "host": host,
+        "message": message,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    url = CONFIG["alert_webhook_url"]
+    if url:
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5).close()
+        except Exception as exc:  # noqa: BLE001 - delivery is best effort
+            log_event(f"Alert webhook delivery failed for {rule}: {exc}", "warning")
+    ntfy = CONFIG["alert_ntfy_url"]
+    if ntfy:
+        recovered = event.endswith("_recovered")
+        prio = "default" if recovered else ("urgent" if severity == "critical" else "high")
+        try:
+            req = urllib.request.Request(
+                ntfy,
+                data=message.encode(),
+                headers={
+                    **(
+                        {"Authorization": f"Bearer {CONFIG['alert_ntfy_token']}"}
+                        if CONFIG["alert_ntfy_token"]
+                        else {}
+                    ),
+                    # HTTP headers must be latin-1; keep the title ASCII-safe.
+                    "Title": f"{host}: {'recovered' if recovered else severity}".encode(
+                        "ascii", "replace"
+                    ).decode(),
+                    "Priority": prio,
+                    "Tags": "white_check_mark" if recovered else "warning",
+                    **({"Actions": actions} if actions else {}),
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5).close()
+        except Exception as exc:  # noqa: BLE001
+            log_event(f"Alert ntfy delivery failed for {rule}: {exc}", "warning")
+
+
+def _alert_tick(bad: dict) -> list:
+    """Advance the alert state machine one sample.
+
+    A rule fires after CONFIG["alert_confirm_samples"] consecutive bad
+    samples (debounce) and recovers on the first clean sample. Notifies
+    once per transition, not every sample.
+
+    Args:
+        bad: Output of _collect_alert_conditions().
+
+    Returns:
+        The list of (event, rule) transitions emitted this tick.
+    """
+    need = max(1, CONFIG["alert_confirm_samples"])
+    fired = []
+    with _alert_lock:
+        for rule, (sev, msg) in bad.items():
+            _alert_streak[rule] = _alert_streak.get(rule, 0) + 1
+            if rule not in _alert_active and _alert_streak[rule] >= need:
+                _alert_active[rule] = {"severity": sev, "message": msg}
+                fired.append(("alert", rule, sev, msg))
+        for rule in [r for r in _alert_active if r not in bad]:
+            info = _alert_active.pop(rule)
+            fired.append(("alert_recovered", rule, info["severity"], f"Recovered: {info['message']}"))
+        for rule in [r for r in _alert_streak if r not in bad]:
+            del _alert_streak[rule]
+        for event, rule, sev, msg in fired:
+            _alert_history.append(
+                {"ts": time.time(), "event": event, "rule": rule, "severity": sev, "message": msg}
+            )
+    for event, rule, sev, msg in fired:
+        log_event(f"ALERT {event}: {msg}", "error" if event == "alert" else "success")
+        _send_alert(event, rule, sev, msg)
+    return [(e, r) for e, r, _, _ in fired]
+
+
+def _alert_loop() -> None:
+    """Background sampler: evaluate rules every alert_interval seconds."""
+    while True:
+        try:
+            _alert_tick(_collect_alert_conditions())
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            log_event(f"Alert sampler error: {exc}", "warning")
+        time.sleep(max(5.0, CONFIG["alert_interval"]))
+
+
+def start_alerting() -> bool:
+    """Start the alert sampler if a destination is configured."""
+    if not (CONFIG["alert_webhook_url"] or CONFIG["alert_ntfy_url"]):
+        return False
+    if CONFIG["alert_interval"] <= 0:
+        return False
+    _spawn("alert-sampler", _alert_loop)
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Metrics History (SQLite)
+# ═══════════════════════════════════════════════════════════════════════════
+_HISTORY_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800}
+_HISTORY_MAX_POINTS = 500
+_history_lock = threading.Lock()
+_NET_SKIP = re.compile(r"^(veth|br-|docker|virbr|lo$)")
+
+
+def _history_enabled() -> bool:
+    return bool(CONFIG["history_db"])
+
+
+def _history_conn() -> sqlite3.Connection:
+    """Open the history DB, creating the schema on first use."""
+    conn = sqlite3.connect(CONFIG["history_db"], timeout=5)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS samples ("
+        "ts INTEGER NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_samples_metric_ts ON samples(metric, ts)")
+    return conn
+
+
+def _collect_history_sample() -> dict:
+    """Gather one flat {metric: value} snapshot from the live getters.
+
+    Sources that are unavailable (no GPU, no disks) simply contribute no
+    keys. Rate metrics use the same differential samplers as the dashboard.
+    """
+    m: dict = {}
+    m["cpu_percent"] = float(get_cpu_usage()["usage"])
+    temp = get_cpu_temperature()
+    if temp:
+        m["cpu_temp_c"] = float(temp)
+    m["mem_percent"] = float(get_memory()["percent"])
+    for d in get_storage():
+        m[f"disk_used_percent:{d['mount']}"] = float(d["percent"])
+    rates = get_network()["rates"]
+    m["net_rx_bps"] = float(sum(r["rx_rate"] for n, r in rates.items() if not _NET_SKIP.match(n)))
+    m["net_tx_bps"] = float(sum(r["tx_rate"] for n, r in rates.items() if not _NET_SKIP.match(n)))
+    for name, d in get_disk_io()["disks"].items():
+        m[f"disk_busy_percent:{name}"] = d["busy_percent"]
+        m[f"disk_read_bps:{name}"] = float(d["read_bps"])
+        m[f"disk_write_bps:{name}"] = float(d["write_bps"])
+    for g in get_gpu()["gpus"]:
+        i = g["index"]
+        for key, val in (
+            ("gpu_util_percent", g["util_percent"]),
+            ("gpu_vram_percent", g["mem_percent"]),
+            ("gpu_temp_c", g["temp_c"]),
+            ("gpu_power_w", g["power_w"]),
+        ):
+            if val is not None:
+                m[f"{key}:{i}"] = float(val)
+    return m
+
+
+def _history_record(sample: dict, now: float | None = None) -> int:
+    """Write one sample (one row per metric). Returns rows written."""
+    ts = int(now if now is not None else time.time())
+    rows = [(ts, k, v) for k, v in sample.items()]
+    with _history_lock, _history_conn() as conn:
+        conn.executemany("INSERT INTO samples (ts, metric, value) VALUES (?, ?, ?)", rows)
+    return len(rows)
+
+
+def _history_prune(now: float | None = None) -> int:
+    """Delete samples older than history_days. Returns rows removed."""
+    cutoff = int((now if now is not None else time.time()) - CONFIG["history_days"] * 86400)
+    with _history_lock, _history_conn() as conn:
+        return conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,)).rowcount
+
+
+def get_history(metric: str, range_key: str = "1h", now: float | None = None) -> dict:
+    """Return a downsampled series for one metric.
+
+    Args:
+        metric: Exact metric name (see get_history_metrics()).
+        range_key: One of _HISTORY_RANGES.
+        now: Override the current time (tests).
+
+    Returns:
+        {"metric", "range", "points": [[ts, avg_value], ...]} with at most
+        _HISTORY_MAX_POINTS points, averaged per time bucket.
+
+    Raises:
+        ValueError: range_key is not a supported range.
+    """
+    if range_key not in _HISTORY_RANGES:
+        raise ValueError(f"range must be one of {sorted(_HISTORY_RANGES)}")
+    span = _HISTORY_RANGES[range_key]
+    end = int(now if now is not None else time.time())
+    bucket = max(1, span // _HISTORY_MAX_POINTS)
+    with _history_lock, _history_conn() as conn:
+        rows = conn.execute(
+            "SELECT (ts / ?) * ? AS b, AVG(value) FROM samples "
+            "WHERE metric = ? AND ts >= ? GROUP BY b ORDER BY b",
+            (bucket, bucket, metric, end - span),
+        ).fetchall()
+    return {"metric": metric, "range": range_key, "points": [[b, round(v, 2)] for b, v in rows]}
+
+
+def get_history_metrics() -> list:
+    """List metric names that have recorded samples."""
+    with _history_lock, _history_conn() as conn:
+        return [r[0] for r in conn.execute("SELECT DISTINCT metric FROM samples ORDER BY metric")]
+
+
+def _history_loop() -> None:
+    """Background sampler: record every history_interval, prune hourly."""
+    last_prune = 0.0
+    while True:
+        try:
+            _history_record(_collect_history_sample())
+            if time.time() - last_prune > 3600:
+                _history_prune()
+                last_prune = time.time()
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            log_event(f"History sampler error: {exc}", "warning")
+        time.sleep(max(5.0, CONFIG["history_interval"]))
+
+
+def start_history() -> bool:
+    """Start the history sampler if a DB path is configured."""
+    if not _history_enabled() or CONFIG["history_interval"] <= 0:
+        return False
+    try:
+        _history_conn().close()
+    except (sqlite3.Error, OSError) as exc:
+        log_event(f"History disabled — cannot open {CONFIG['history_db']}: {exc}", "warning")
+        return False
+    _spawn("history-sampler", _history_loop)
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Threat Detection (log-driven; see threat_detect.py)
+# ═══════════════════════════════════════════════════════════════════════════
+_THREAT_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
+_threat_lock = threading.Lock()
+_threat_engine = None
+_threat_tailers: dict = {}
+_threat_feed: deque = deque(maxlen=5000)  # events pushed by in-process hooks
+_threat_notified: deque = deque()  # timestamps of recent notifications
+_blocker = None
+_approval_key: bytes = b""
+_threat_state: dict = {
+    "started": False,
+    "learning": True,
+    "learning_ends": 0.0,
+    "last_poll": 0.0,
+    "events_seen": 0,
+    "suppressed": 0,
+    "problems": [],
+}
+
+
+def _threat_enabled() -> bool:
+    return bool(THREAT_AVAILABLE and CONFIG["threat_enabled"] and CONFIG["history_db"])
+
+
+def _threat_push_login_fail(ip: str) -> None:
+    """Feed a dashboard/API auth failure into the detector (non-blocking)."""
+    if not _threat_enabled():
+        return
+    norm = _td.normalize_ip(ip or "")
+    if norm:
+        _threat_feed.append(
+            _td.LogEvent(
+                ts=time.time(), source="sysmon", kind="login_fail", ip=norm, user="(api)"
+            )
+        )
+
+
+def _threat_init() -> None:
+    """Create the engine: load baseline, resolve learning window, backfill ssh."""
+    global _threat_engine
+    conn = _td.open_db(CONFIG["history_db"])
+    try:
+        learning, ends = _td.learning_state(conn, CONFIG["threat_learning_days"])
+        baseline = _td.load_baseline(conn)
+    finally:
+        conn.close()
+    engine = _td.ThreatEngine(
+        baseline=baseline,
+        allowlist=_td.parse_networks(CONFIG["threat_allowlist"]),
+        learning=learning,
+    )
+    state_dir = _td.resolve_state_dir(CONFIG["history_db"])
+    cursor = state_dir / "sshd.cursor"
+    problems: list = []
+    # First run (no cursor): seed the baseline from 30 days of history.
+    for ev in _td.read_journal_sshd(
+        str(cursor), backfill=not cursor.exists(), errors=problems
+    ):
+        engine.ingest(ev, seed=True)
+    conn = _td.open_db(CONFIG["history_db"])
+    try:
+        _td.save_baseline(conn, engine.baseline)
+    finally:
+        conn.close()
+    _threat_tailers.clear()
+    for path in CONFIG["threat_access_logs"]:
+        _threat_tailers[path] = _td.FileTailer(path)
+    _blocker_init(engine, state_dir)
+    with _threat_lock:
+        _threat_engine = engine
+        _threat_state.update(
+            started=True,
+            learning=learning,
+            learning_ends=ends,
+            problems=problems,
+        )
+
+
+def _blocker_init(engine, state_dir) -> None:
+    """Create the BlockManager for the configured mode (never raises)."""
+    global _blocker, _approval_key
+    mode = CONFIG["block_mode"]
+    if mode not in _ib.MODES:
+        log_event(f"Unknown SYSMONITOR_BLOCK_MODE '{mode}' — blocker off", "warning")
+        mode = "off"
+    settings = _ib.Settings(
+        mode=mode,
+        helper=CONFIG["block_helper"],
+        max_active=CONFIG["block_max_active"],
+        max_per_hour=CONFIG["block_max_per_hour"],
+        allowlist=_td.parse_networks(CONFIG["threat_allowlist"]),
+    )
+    if (
+        mode in ("manual", "auto")
+        and _ib.count_allowlist_entries(settings.allowlist) == 0
+    ):
+        log_event(
+            f"IP blocker is in '{mode}' mode with an EMPTY allowlist: add your own "
+            "public address(es) and DNS resolvers to /etc/sys-monitor/block-allowlist "
+            "(or SYSMONITOR_THREAT_ALLOWLIST) so they can never be blocked",
+            "warning",
+        )
+    _blocker = _ib.BlockManager(
+        CONFIG["history_db"],
+        settings,
+        known_ips=lambda: set(engine.baseline.ips),
+        log=log_event,
+    )
+    try:
+        _approval_key = _ib.load_or_create_secret(state_dir / "approval.key")
+        _blocker.init_helper()
+    except (OSError, _ib.BlockRefused) as exc:
+        log_event(f"IP blocker init problem: {exc}", "warning")
+
+
+def _approval_action(ip: str) -> str:
+    """ntfy 'Actions' header value for a one-tap signed Block button."""
+    if not (CONFIG["public_url"] and _approval_key):
+        return ""
+    exp = int(time.time()) + _ib.APPROVAL_TTL
+    sig = _ib.sign_approval(_approval_key, ip, exp)
+    url = f"{CONFIG['public_url']}/api/blocks/approve?ip={ip}&exp={exp}&sig={sig}"
+    return f"http, Block {ip}, {url}, method=POST, clear=true"
+
+
+def _threat_collect_events() -> list:
+    """Gather new events from every source, oldest first."""
+    events: list = []
+    problems: list = []
+    cursor = _td.resolve_state_dir(CONFIG["history_db"]) / "sshd.cursor"
+    events += _td.read_journal_sshd(str(cursor), errors=problems)
+    for path, tailer in _threat_tailers.items():
+        for line in tailer.read_new():
+            ev = _td.parse_access_line(line, source=Path(path).parent.name or "web")
+            if ev:
+                events.append(ev)
+    while _threat_feed:
+        events.append(_threat_feed.popleft())
+    events.sort(key=lambda e: e.ts)
+    with _threat_lock:
+        _threat_state["problems"] = problems
+    return events
+
+
+def _threat_notify(f, decision: dict | None = None) -> None:
+    """Send a warning/critical finding, capped per hour to avoid floods."""
+    if f.severity == "info":
+        return
+    decision = decision or {}
+    message, actions = f.message, ""
+    act = decision.get("action")
+    if act == "blocked":
+        message += f" — BLOCKED for {decision['ttl'] // 3600}h"
+    elif act == "would_block":
+        message += " — would block (dry-run)"
+    elif act == "proposed" and f.blockable and CONFIG["block_mode"] in ("manual", "auto"):
+        actions = _approval_action(f.ip)
+    now = time.time()
+    with _threat_lock:
+        while _threat_notified and now - _threat_notified[0] > 3600:
+            _threat_notified.popleft()
+        if len(_threat_notified) >= CONFIG["threat_notify_per_hour"]:
+            _threat_state["suppressed"] += 1
+            return
+        _threat_notified.append(now)
+    _send_alert(
+        "threat", f"threat:{f.detector}:{f.ip or f.user}", f.severity, message, actions=actions
+    )
+
+
+def _threat_poll_once() -> list:
+    """One detection cycle. Returns the findings produced."""
+    if _threat_engine is None:
+        return []
+    events = _threat_collect_events()
+    findings: list = []
+    with _threat_lock:
+        for ev in events:
+            findings += _threat_engine.ingest(ev)
+        _threat_state["events_seen"] += len(events)
+        _threat_state["last_poll"] = time.time()
+        if _threat_state["learning"] and time.time() >= _threat_state["learning_ends"]:
+            _threat_state["learning"] = False
+            _threat_engine.learning = False
+            logins_changed = True
+        else:
+            logins_changed = False
+    if events or findings or logins_changed:
+        conn = _td.open_db(CONFIG["history_db"])
+        try:
+            for f in findings:
+                _td.record_finding(conn, f)
+            if any(e.kind == "login_ok" for e in events):
+                _td.save_baseline(conn, _threat_engine.baseline)
+        finally:
+            conn.close()
+    for f in findings:
+        decision = {}
+        if _blocker is not None and f.blockable:
+            try:
+                decision = _blocker.handle_finding(f)
+            except Exception as exc:  # noqa: BLE001 - never lose the alert
+                log_event(f"Blocker error for {f.ip}: {exc}", "warning")
+        f.extra["block"] = decision
+        log_event(
+            f"THREAT [{f.severity}] {f.message}"
+            + (f" [{decision['action']}]" if decision.get("action", "none") != "none" else ""),
+            "error" if f.severity == "critical" else "warning",
+        )
+        _threat_notify(f, decision)
+    return findings
+
+
+def _threat_loop() -> None:
+    """Background poller; prunes old findings hourly."""
+    last_prune = 0.0
+    while True:
+        try:
+            _threat_poll_once()
+            if time.time() - last_prune > 3600:
+                conn = _td.open_db(CONFIG["history_db"])
+                try:
+                    _td.prune_findings(conn, CONFIG["threat_retention_days"])
+                finally:
+                    conn.close()
+                last_prune = time.time()
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            log_event(f"Threat detector error: {exc}", "warning")
+        time.sleep(max(2.0, CONFIG["threat_interval"]))
+
+
+def start_threat_detection() -> bool:
+    """Start the detector thread if enabled and storage is available."""
+    if not _threat_enabled() or CONFIG["threat_interval"] <= 0:
+        return False
+    try:
+        _threat_init()
+    except (sqlite3.Error, OSError) as exc:
+        log_event(f"Threat detection disabled — init failed: {exc}", "warning")
+        return False
+    _spawn("threat-detector", _threat_loop)
+    return True
+
+
+def get_threats(range_key: str = "24h", ip: str = "", min_severity: str = "info", limit: int = 200) -> dict:
+    """Findings, top offenders and engine status for the dashboard/API.
+
+    Raises:
+        ValueError: If range_key or min_severity is not recognised.
+    """
+    if range_key not in _THREAT_RANGES:
+        raise ValueError(f"range must be one of {sorted(_THREAT_RANGES)}")
+    if min_severity not in ("info", "warning", "critical"):
+        raise ValueError("severity must be info, warning or critical")
+    since = time.time() - _THREAT_RANGES[range_key]
+    conn = _td.open_db(CONFIG["history_db"])
+    try:
+        findings = _td.query_findings(conn, since, ip, min_severity, limit)
+        top = _td.top_offenders(conn, since)
+    finally:
+        conn.close()
+    with _threat_lock:
+        status = {k: _threat_state[k] for k in _threat_state}
+    return {
+        "enabled": True,
+        "status": status,
+        "range": range_key,
+        "findings": findings,
+        "top_offenders": top,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 @app.route("/")
@@ -1603,6 +2630,235 @@ def api_storage():
 @require_auth
 def api_network():
     return jsonify(get_network())
+
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated liveness + background-thread check for supervisors.
+
+    Returns 200 when every started background thread (history, alerting,
+    security watcher) is alive, 503 with the dead ones listed otherwise.
+    """
+    dead = sorted(n for n, t in _bg_threads.items() if not t.is_alive())
+    body = {"ok": not dead, "threads": sorted(_bg_threads), "dead": dead}
+    return jsonify(body), (200 if not dead else 503)
+
+
+@app.route("/api/containers")
+@require_auth
+def api_containers():
+    return jsonify(get_containers())
+
+
+@app.route("/api/alerts")
+@require_auth
+def api_alerts():
+    """Currently-firing alerts plus recent transition history (newest first)."""
+    with _alert_lock:
+        active = [{"rule": r, **i} for r, i in _alert_active.items()]
+        history = list(_alert_history)[::-1]
+    return jsonify(
+        {
+            "enabled": bool(CONFIG["alert_webhook_url"] or CONFIG["alert_ntfy_url"]),
+            "active": active,
+            "history": history,
+        }
+    )
+
+
+@app.route("/api/threats")
+@require_auth
+def api_threats():
+    """Threat findings: ?range=1h|6h|24h|7d|30d&ip=&severity=&limit=."""
+    if not _threat_enabled():
+        return jsonify({"enabled": False, "findings": [], "top_offenders": []})
+    try:
+        limit = int(request.args.get("limit", "200"))
+        return jsonify(
+            get_threats(
+                request.args.get("range", "24h"),
+                request.args.get("ip", ""),
+                request.args.get("severity", "info"),
+                limit,
+            )
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+def _blocker_or_503():
+    if not (_threat_enabled() and _blocker is not None):
+        abort(503, description="IP blocker unavailable (threat detection disabled)")
+    return _blocker
+
+
+@app.route("/api/blocks")
+@require_auth
+def api_blocks():
+    """Blocker mode, active blocks and recent decisions (incl. dry-run)."""
+    if not (_threat_enabled() and _blocker is not None):
+        return jsonify({"enabled": False, "mode": "off", "active": [], "history": []})
+    return jsonify(
+        {
+            "enabled": _blocker.s.mode != "off",
+            "mode": _blocker.s.mode,
+            "active": _blocker.active(),
+            "history": _blocker.history(
+                max(1, min(request.args.get("limit", 50, type=int), 500))
+            ),
+        }
+    )
+
+
+@app.route("/api/blocks", methods=["POST"])
+@require_strict_auth
+@require_config_auth
+def api_blocks_add():
+    """Operator block: JSON {ip, reason?, ttl?, force?}. Public IPs only."""
+    mgr = _blocker_or_503()
+    body = request.get_json(silent=True) or {}
+    try:
+        ttl = int(body["ttl"]) if body.get("ttl") else None
+        res = mgr.block(
+            str(body.get("ip", "")),
+            str(body.get("reason") or "operator block"),
+            source="manual",
+            ttl=ttl,
+            force=bool(body.get("force")),
+        )
+    except (ValueError, _ib.BlockRefused) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **res})
+
+
+@app.route("/api/blocks/<path:ip>", methods=["DELETE"])
+@require_strict_auth
+@require_config_auth
+def api_blocks_remove(ip):
+    """Unblock one address (allowed in every mode so blocks can always be undone)."""
+    mgr = _blocker_or_503()
+    try:
+        return jsonify({"success": True, **mgr.unblock(ip, by=f"api:{_client_ip()}")})
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/blocks/flush", methods=["POST"])
+@require_strict_auth
+@require_config_auth
+def api_blocks_flush():
+    """Remove every block."""
+    mgr = _blocker_or_503()
+    try:
+        return jsonify({"success": True, "removed": mgr.flush(by=f"api:{_client_ip()}")})
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/quarantine")
+@require_auth
+def api_quarantine():
+    """Outbound-quarantine state: {available, active, until, remaining}."""
+    if not (_threat_enabled() and _blocker is not None):
+        return jsonify({"available": False, "active": False})
+    return jsonify(_blocker.quarantine_status())
+
+
+@app.route("/api/quarantine", methods=["POST"])
+@require_strict_auth
+@require_config_auth
+def api_quarantine_start():
+    """Cut outbound internet: JSON {confirm: "QUARANTINE", minutes?: 1-60}.
+
+    Manual only. LAN, loopback and SSH replies stay up; auto-reverts.
+    """
+    mgr = _blocker_or_503()
+    body = request.get_json(silent=True) or {}
+    if body.get("confirm") != _ib.QUARANTINE_CONFIRM:
+        return (
+            jsonify({"success": False, "error": f'send {{"confirm": "{_ib.QUARANTINE_CONFIRM}"}}'}),
+            400,
+        )
+    try:
+        minutes = int(body["minutes"]) if body.get("minutes") else None
+        # Notify first: the alert path (local ntfy) still works, a remote webhook won't.
+        _send_alert(
+            "quarantine", "quarantine", "critical",
+            f"Outbound internet quarantine requested from {_client_ip()}",
+        )
+        return jsonify({"success": True, **mgr.quarantine_start(minutes, by=f"api:{_client_ip()}")})
+    except (ValueError, _ib.BlockRefused) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/quarantine", methods=["DELETE"])
+@require_strict_auth
+@require_config_auth
+def api_quarantine_release():
+    """Restore outbound internet immediately."""
+    mgr = _blocker_or_503()
+    try:
+        return jsonify({"success": True, **mgr.quarantine_release(by=f"api:{_client_ip()}")})
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+
+@app.route("/api/blocks/approve", methods=["POST"])
+def api_blocks_approve():
+    """One-tap approval from a notification: signed, single-IP, expiring.
+
+    Deliberately not behind the bearer token — the HMAC signature is the
+    credential, and it only authorizes blocking the one address it names.
+    """
+    mgr = _blocker_or_503()
+    client = _client_ip()
+    if _auth_locked_out(client):
+        abort(429, description="Too many failed attempts")
+    ip = request.args.get("ip", "")
+    sig = request.args.get("sig", "")
+    try:
+        exp = int(request.args.get("exp", "0"))
+    except ValueError:
+        abort(400, description="bad expiry")
+    if not _approval_key or not _ib.verify_approval(_approval_key, ip, exp, sig):
+        # Unauthenticated route: cap the attacker-controlled text and count the
+        # failure toward the same per-IP lockout as bad bearer tokens.
+        _auth_record_failure(client)
+        log_event(f"Invalid/expired block approval for {ip[:64]!r} from {client}", "warning")
+        abort(403, description="invalid or expired approval")
+    try:
+        res = mgr.block(ip, "operator approval via notification", source="manual")
+    except _ib.BlockRefused as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, **res})
+
+
+@app.route("/api/history")
+@require_auth
+def api_history():
+    """Downsampled history for one metric: ?metric=<name>&range=1h|6h|24h|7d."""
+    if not _history_enabled():
+        return jsonify({"enabled": False, "points": []})
+    metric = request.args.get("metric", "")
+    if not metric:
+        return jsonify({"enabled": True, "metrics": get_history_metrics()})
+    try:
+        data = get_history(metric, request.args.get("range", "1h"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"enabled": True, **data})
+
+
+@app.route("/api/diskio")
+@require_auth
+def api_diskio():
+    return jsonify(get_disk_io())
+
+
+@app.route("/api/gpu")
+@require_auth
+def api_gpu():
+    return jsonify(get_gpu())
 
 
 @app.route("/api/processes")
@@ -1664,7 +2920,7 @@ def api_services_add():
     name = data.get("name", "").strip()
     if not name:
         return jsonify({"success": False, "error": "Service name required"}), 400
-    if not re.match(r"^[a-zA-Z0-9@._:-]+$", name):
+    if not re.fullmatch(r"[a-zA-Z0-9@._:-]+", name):
         return jsonify({"success": False, "error": "Invalid service name"}), 400
     if name in CONFIG["services"]:
         return jsonify({"success": False, "error": f"'{name}' already monitored"}), 409
@@ -1699,7 +2955,7 @@ def api_services_rename(svc):
     new_name = data.get("name", "").strip()
     if not new_name:
         return jsonify({"success": False, "error": "New name required"}), 400
-    if not re.match(r"^[a-zA-Z0-9@._:-]+$", new_name):
+    if not re.fullmatch(r"[a-zA-Z0-9@._:-]+", new_name):
         return jsonify({"success": False, "error": "Invalid service name"}), 400
     if svc not in CONFIG["services"]:
         return jsonify({"success": False, "error": f"'{svc}' not in list"}), 404
@@ -1886,6 +3142,7 @@ def api_security_allowlist_remove():
 
 
 @app.route("/api/security/baseline", methods=["GET"])
+@require_auth
 def api_security_baseline_get():
     """Report whether a baseline exists, and when/where it was captured."""
     if not HIDDENSCOPE_AVAILABLE:
@@ -2004,6 +3261,15 @@ if __name__ == "__main__":
     )
     if start_security_watcher():
         log_event(f"Security watcher: every {HIDDENSCOPE_WATCH_INTERVAL:g}s")
+    if start_history():
+        log_event(f"Metrics history: {CONFIG['history_db']} every {CONFIG['history_interval']:g}s, keep {CONFIG['history_days']:g}d")
+    if start_alerting():
+        log_event(f"Outbound alerting: every {CONFIG['alert_interval']:g}s")
+    if start_threat_detection():
+        log_event(
+            f"Threat detection: every {CONFIG['threat_interval']:g}s, "
+            f"learning {'ON' if _threat_state['learning'] else 'done'}"
+        )
     log_event(f"Listening on http://{CONFIG['host']}:{CONFIG['port']}")
     log_event("SysMonitor ready.", "success")
 

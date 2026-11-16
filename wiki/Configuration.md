@@ -14,6 +14,8 @@ Set them in the systemd unit file (`/etc/systemd/system/sys-monitor.service`) or
 | `SYSMONITOR_PORT` | `8585` | Listen port. |
 | `SYSMONITOR_DEBUG` | `false` | Flask debug mode. **Never enable in production.** |
 | `SYSMONITOR_TOKEN` | *(empty)* | Bearer token for API auth. Leave empty to disable. |
+| `SYSMONITOR_LAN_NO_AUTH` | `false` | When `true` (and a token is set), clients on loopback / private-LAN / link-local addresses skip the token. Put a firewall in front of the port before enabling. |
+| `SYSMONITOR_ALLOWED_HOSTS` | *(empty)* | Extra comma-separated `Host` names accepted besides IP literals, `localhost`, and the machine hostname (`<name>`, `<name>.local`). Others get 400 (DNS-rebinding guard). |
 | `SYSMONITOR_SERVICES` | `ssh,nginx,docker,...` | Comma-separated list of systemd services to monitor. |
 | `SYSMONITOR_REFRESH` | `2` | Frontend polling interval in seconds. |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list. |
@@ -28,7 +30,7 @@ Set them in the systemd unit file (`/etc/systemd/system/sys-monitor.service`) or
 
 ### Authentication
 
-When `SYSMONITOR_TOKEN` is set, all API endpoints require:
+When `SYSMONITOR_TOKEN` is set, all API endpoints require (compared in constant time; 10 failed attempts per minute from one client IP locks it out with `429`):
 
 ```
 Authorization: Bearer <your-token>
@@ -61,11 +63,12 @@ Live connection/listener monitoring needs no configuration — it runs automatic
 |---|---|---|
 | `SYSHUB_HOST` | `0.0.0.0` | Bind address. |
 | `SYSHUB_PORT` | `8686` | Listen port. |
-| `SYSHUB_TOKEN` | *(empty)* | Bearer token for hub API auth. |
+| `SYSHUB_TOKEN` | *(empty)* | Bearer token for hub API auth (5 failures/60 s per IP locks that IP out for the window). With no token, `POST /api/nodes/<id>/power/<action>` is accepted from loopback only. |
+| `SYSHUB_ALLOWED_HOSTS` | *(empty)* | Extra comma-separated `Host` names accepted besides IP literals, `localhost` and the machine hostname (`<name>`, `<name>.local`). Others get 400 (DNS-rebinding guard). |
 | `SYSHUB_POLL_INTERVAL` | `5` | Seconds between fleet health polls. |
 | `SYSHUB_TIMEOUT` | `4` | Per-node HTTP timeout in seconds. |
 | `SYSHUB_DISCOVERY_PORT` | `8585` | Default port to probe during network discovery. |
-| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to the persistent node registry. |
+| `SYSHUB_NODES_FILE` | `./hub_nodes.json` | Path to the persistent node registry (written `0600`; it holds node tokens). |
 | `SYSHUB_DEBUG` | `false` | Flask debug mode. |
 
 ### Node Registry

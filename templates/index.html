@@ -5,12 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>SysMonitor — {{ boot.hostname or 'loading' }}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230c1a2e'/><text x='16' y='22' text-anchor='middle' font-size='18' fill='%232b7de9' font-family='sans-serif' font-weight='bold'>S</text></svg>">
-<style>
-@font-face { font-family:"Exo 2"; src:url("/static/fonts/exo-2-latin-700-normal.woff2") format("woff2"); font-weight:700; font-display:swap; }
-@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
-@font-face { font-family:"Plus Jakarta Sans"; src:url("/static/fonts/plus-jakarta-sans-latin-600-normal.woff2") format("woff2"); font-weight:600; font-display:swap; }
-@font-face { font-family:"IBM Plex Mono"; src:url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); font-weight:400; font-display:swap; }
-</style>
+<link rel="stylesheet" href="/static/cc-base.css">
 <style>
 /* ═══ Foundation ═══ */
 :root {
@@ -25,18 +20,12 @@
   --text-secondary: #c8d3e0;
   --text-muted: #5a7090;
   --text-label: #8a9bb5;
-  --blue: #2b7de9;
-  --orange: #e07018;
   --green: #4ade80;
   --red: #ef4444;
   --purple: #a855f7;
   --yellow: #fbbf24;
   --cyan: #22d3ee;
-  --font-display: 'Exo 2', sans-serif;
-  --font-body: 'Plus Jakarta Sans', sans-serif;
-  --font-mono: 'IBM Plex Mono', monospace;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: linear-gradient(160deg, var(--bg-deep) 0%, var(--bg-primary) 30%, #0d1628 100%);
   color: var(--text-secondary);
@@ -46,7 +35,6 @@ body {
 }
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-thumb { background: #2a3a55; border-radius: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
 
 /* ═══ Boot Screen ═══ */
 #boot-screen {
@@ -154,8 +142,6 @@ body {
 /* ═══ Usage Bars ═══ */
 .bar-wrap { margin-bottom: 8px; }
 .bar-meta { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; font-family: var(--font-mono); }
-.bar-meta .lbl { color: var(--text-secondary); }
-.bar-meta .val { color: var(--text-muted); }
 .bar-track { height: 6px; border-radius: 3px; background: #141e30; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
 
@@ -172,7 +158,6 @@ body {
   transition: all 0.3s;
 }
 .svc-dot.on { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,0.4); }
-.svc-dot.off { background: #475569; }
 .svc-info { flex: 1; min-width: 120px; }
 .svc-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); font-weight: 500; }
 .svc-desc { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
@@ -238,7 +223,6 @@ body {
   font-family: var(--font-mono); font-weight: 500; cursor: pointer;
   border: 1px solid; transition: all 0.15s; letter-spacing: 0.3px;
 }
-.svc-btn:active { transform: scale(0.95); }
 .svc-btn.go   { background: #0d2818; color: var(--green); border-color: #1a4028; }
 .svc-btn.halt { background: #2a1414; color: var(--red); border-color: #4a2020; }
 .svc-btn.cyc  { background: #1e2010; color: var(--orange); border-color: #3a3010; }
@@ -319,7 +303,6 @@ body {
   text-transform: uppercase;
 }
 .proc-tbl td { padding: 6px; color: var(--text-secondary); border-bottom: 1px solid #111a28; }
-.proc-tbl .r { text-align: right; }
 .proc-tbl .cmd { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-label); font-size: 10px; }
 .kill-btn {
   padding: 2px 8px; border-radius: 4px; font-size: 9px;
@@ -348,7 +331,6 @@ body {
   display: flex; justify-content: space-between; padding: 5px 0;
   border-bottom: 1px solid #111a28; font-size: 11px; font-family: var(--font-mono);
 }
-.info-key { color: var(--text-muted); }
 .info-val { color: var(--text-secondary); text-align: right; max-width: 58%; word-break: break-word; }
 
 /* ═══ Power ═══ */
@@ -368,7 +350,6 @@ body {
   display: none; align-items: center; justify-content: center; z-index: 200;
   backdrop-filter: blur(4px);
 }
-.modal-overlay.show { display: flex; }
 .modal-box {
   background: #111d30; border: 1px solid #3a1e1e; border-radius: 12px;
   padding: 28px; max-width: 340px; width: 90%; text-align: center;
@@ -382,7 +363,6 @@ body {
   font-weight: 600; font-size: 11px; cursor: pointer;
 }
 .modal-cancel { background: #1a2640; border: 1px solid #2a3a50; color: var(--text-muted); }
-.modal-confirm { border: 1px solid; }
 
 /* ═══ Logs ═══ */
 .log-area {
@@ -391,10 +371,6 @@ body {
   font-size: 11px; line-height: 1.7;
 }
 .log-ts { color: #2a3a50; }
-.log-info { color: var(--green); }
-.log-warning { color: var(--orange); }
-.log-error { color: var(--red); }
-.log-success { color: var(--cyan); }
 
 /* ═══ Toast ═══ */
 .toast {
@@ -404,7 +380,6 @@ body {
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   animation: toastIn 0.3s ease; display: none;
 }
-.toast.show { display: block; }
 .toast.success { background: #0d2818; border: 1px solid #1a4028; color: var(--green); }
 .toast.warning { background: #2e2a1a; border: 1px solid #4a3a1a; color: var(--orange); }
 .toast.error   { background: #2a1414; border: 1px solid #4a2020; color: var(--red); }
@@ -518,6 +493,39 @@ body {
       <div class="card" style="--accent-color:var(--cyan)">
         <div class="card-hdr">Network</div>
         <div style="display:flex;justify-content:space-around" id="net-quick"></div>
+      </div>
+
+      <!-- Containers card — only shown when SYSMONITOR_DOCKER_SOCKETS is set -->
+      <div class="card" id="containers-card" style="--accent-color:var(--cyan);display:none">
+        <div class="card-hdr">🐳 Containers <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="containers-count"></span></div>
+        <div id="containers-body"></div>
+      </div>
+
+      <!-- History card — only shown when the node records metrics history -->
+      <div class="card" id="history-card" style="--accent-color:var(--blue);display:none">
+        <div class="card-hdr">📈 History
+          <span style="float:right;font-weight:400">
+            <select id="history-metric" onchange="refreshHistory()"></select>
+            <select id="history-range" onchange="refreshHistory()">
+              <option value="1h">1h</option><option value="6h">6h</option>
+              <option value="24h" selected>24h</option><option value="7d">7d</option>
+            </select>
+          </span>
+        </div>
+        <svg class="sparkline" id="history-chart" height="90"></svg>
+        <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono)" id="history-meta"></div>
+      </div>
+
+      <!-- GPU card — only shown when nvidia-smi reports a GPU -->
+      <div class="card" id="gpu-card" style="--accent-color:var(--green);display:none">
+        <div class="card-hdr">🎮 GPU <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="gpu-count"></span></div>
+        <div id="gpu-body"></div>
+      </div>
+
+      <!-- Threats card — only shown when log-driven threat detection is enabled -->
+      <div class="card" id="threat-card" style="--accent-color:var(--orange,#e07018);display:none">
+        <div class="card-hdr">🛡️ Threats <span style="color:var(--text-muted);font-weight:400;font-size:10px" id="threat-count"></span></div>
+        <div id="threat-body"></div>
       </div>
 
       <!-- LLM Models card — only shown when a local model server is detected serving something -->
@@ -848,6 +856,34 @@ function barHTML(label, value, max, detail, color) {
 // ════════════════════════════════════════════════════════════════════════
 // API Layer
 // ════════════════════════════════════════════════════════════════════════
+// Dangerous actions (quarantine, unblock) are refused without the API token even from the
+// LAN (SYSMONITOR_STRICT_ACTIONS). On a 401 ask for the token once per browser session and
+// retry; a config token (X-Config-Token) is asked for only if the server says it needs one.
+function tokenGet(k) { try { return sessionStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function tokenSet(k, v) { try { v ? sessionStorage.setItem(k, v) : sessionStorage.removeItem(k); } catch (e) {} }
+async function actionFetch(url, opts) {
+  opts = opts || {};
+  const send = () => {
+    const h = Object.assign({}, opts.headers || {});
+    if (tokenGet('sysmon_token')) h['Authorization'] = 'Bearer ' + tokenGet('sysmon_token');
+    if (tokenGet('sysmon_config_token')) h['X-Config-Token'] = tokenGet('sysmon_config_token');
+    return fetch(url, Object.assign({}, opts, { headers: h }));
+  };
+  let r = await send();
+  for (let attempt = 0; attempt < 2 && r.status === 401; attempt++) {
+    const needsConfig = (await r.clone().text()).toLowerCase().includes('config token');
+    const key = needsConfig ? 'sysmon_config_token' : 'sysmon_token';
+    const entered = prompt(needsConfig
+      ? 'This action needs the config token (SYSMONITOR_CONFIG_TOKEN):'
+      : 'This action needs the API token (SYSMONITOR_TOKEN):');
+    if (!entered) return r;
+    tokenSet(key, entered);
+    r = await send();
+    if (r.status === 401) tokenSet(key, '');
+  }
+  return r;
+}
+
 async function api(path) {
   try {
     const r = await fetch('/api/' + path, { headers: AUTH_HEADERS });
@@ -1148,6 +1184,145 @@ async function refreshTab() {
 async function pollHealthStatus() {
   const health = await api('system-health');
   if (health) checkHealthAlert(health);
+}
+
+// ── Containers (read-only Docker view; card hidden when disabled) ──
+async function refreshContainers() {
+  const c = await api('containers');
+  const card = $('containers-card');
+  if (!c || !c.enabled) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  let running = 0, total = 0;
+  $('containers-body').innerHTML = c.daemons.map(d => {
+    if (!d.available) {
+      return `<div class="llm-row"><span class="llm-row-label">${esc(d.socket)}</span>
+        <div style="font-size:11px;color:var(--red)">${esc(d.error || 'unavailable')}</div></div>`;
+    }
+    total += d.containers.length;
+    const rows = d.containers.map(x => {
+      if (x.state === 'running') running++;
+      const bad = x.health === 'unhealthy' || x.state === 'restarting';
+      const color = bad ? 'var(--red)' : (x.state === 'running' ? 'var(--green)' : 'var(--text-muted)');
+      return `<div style="font-size:11px;padding:2px 0"><span style="color:${color}">●</span>
+        ${esc(x.name)} <span style="color:var(--text-muted)">${esc(x.status)}</span></div>`;
+    }).join('');
+    return `<div class="llm-row"><span class="llm-row-label">${esc(d.socket)}</span>${rows}</div>`;
+  }).join('');
+  $('containers-count').textContent = `${running}/${total} RUNNING`;
+}
+
+// ── Metrics History (SQLite-backed; card hidden when disabled) ──
+async function refreshHistory(reload) {
+  const sel = $('history-metric');
+  if (reload || !sel.options.length) {
+    const list = await api('history');
+    if (!list || !list.enabled || !list.metrics || !list.metrics.length) {
+      $('history-card').style.display = 'none';
+      return;
+    }
+    const keep = sel.value;
+    sel.innerHTML = list.metrics.map(m => `<option value="${escAttr(m)}">${esc(m)}</option>`).join('');
+    sel.value = list.metrics.includes(keep) ? keep : (list.metrics.includes('cpu_percent') ? 'cpu_percent' : list.metrics[0]);
+  }
+  const d = await api('history?metric=' + encodeURIComponent(sel.value) + '&range=' + $('history-range').value);
+  if (!d || !d.enabled) return;
+  $('history-card').style.display = 'block';
+  const vals = d.points.map(p => p[1]);
+  const el = $('history-chart');
+  if (vals.length < 2) { el.innerHTML = ''; $('history-meta').textContent = 'Collecting data…'; return; }
+  drawSparkline(el, vals, 'var(--blue)');
+  $('history-meta').textContent =
+    `min ${Math.min(...vals)} · max ${Math.max(...vals)} · last ${vals[vals.length - 1]} · ${vals.length} pts`;
+}
+
+// ── GPU Polling (nvidia-smi; card hidden when unavailable) ──
+async function refreshGPU() {
+  const g = await api('gpu');
+  const card = $('gpu-card');
+  if (!g || !g.available) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  $('gpu-count').textContent = g.gpus.length > 1 ? g.gpus.length + ' GPUS' : '';
+  const pct = v => (v == null ? '—' : Math.round(v) + '%');
+  $('gpu-body').innerHTML = g.gpus.map(x => {
+    const mem = x.mem_percent == null ? 0 : x.mem_percent;
+    const procs = g.processes.slice(0, 4).map(p =>
+      `<span class="llm-chip">${esc(p.name.split('/').pop())} · ${Math.round(p.mem_used_mb || 0)} MB</span>`).join(' ');
+    return `<div class="llm-row">
+      <span class="llm-row-label">${esc(x.name)}</span>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+        Util ${pct(x.util_percent)} · VRAM ${Math.round(x.mem_used_mb || 0)}/${Math.round(x.mem_total_mb || 0)} MB (${pct(x.mem_percent)})
+        · ${x.temp_c == null ? '—' : Math.round(x.temp_c) + '°C'}
+        · ${x.power_w == null ? '—' : Math.round(x.power_w) + 'W'}
+      </div>
+      <div style="height:6px;background:var(--border);border-radius:3px;margin-top:6px;overflow:hidden">
+        <div style="height:100%;width:${mem}%;background:var(--accent-color,var(--green))"></div></div>
+      <div class="llm-chips">${procs}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Threat detection (hidden when disabled) ──
+async function refreshThreats() {
+  const t = await api('threats?range=24h&severity=warning&limit=8');
+  const card = $('threat-card');
+  if (!t || !t.enabled) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const st = t.status || {};
+  const sevColor = { critical: 'var(--red)', warning: 'var(--yellow, #eab308)', info: 'var(--text-muted)' };
+  const learn = st.learning
+    ? `<div class="llm-row"><span class="llm-chip">learning baseline until ${esc(new Date(st.learning_ends * 1000).toLocaleDateString())}</span></div>` : '';
+  const problems = (st.problems || []).map(p =>
+    `<div class="llm-row" style="color:var(--red);font-size:11px">⚠ ${esc(p)}</div>`).join('');
+  $('threat-count').textContent = t.findings.length ? t.findings.length + ' IN 24H' : 'ALL QUIET';
+  const rows = t.findings.map(f => `<div class="llm-row">
+      <span class="llm-row-label" style="color:${sevColor[f.severity] || 'inherit'}">${esc(f.detector.replace(/_/g, ' '))}</span>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(f.message)}</div>
+      <div style="font-size:10px;color:var(--text-muted)">${esc(new Date(f.ts * 1000).toLocaleString())}</div>
+    </div>`).join('');
+  const b = await api('blocks');
+  let blocks = '';
+  if (b && b.mode && b.mode !== 'off') {
+    const dry = (b.history || []).filter(h => h.status === 'would_block').length;
+    blocks = `<div class="llm-row"><span class="llm-row-label">IP blocker · ${esc(b.mode)}</span>` +
+      (b.mode === 'dry-run' ? `<div style="font-size:11px;color:var(--text-muted)">${dry} would-block decision(s) recorded; nothing is enforced</div>` : '') +
+      b.active.map(x => `<div style="font-size:11px;margin-top:3px"><span class="llm-chip">${esc(x.ip)}</span> ` +
+        `<span style="color:var(--text-muted)">until ${esc(new Date(x.expires * 1000).toLocaleString())} · ${esc(x.detector || x.source)}</span> ` +
+        `<a href="#" data-unblock="${esc(x.ip)}">unblock</a></div>`).join('') + '</div>';
+  }
+  const q = await api('quarantine');
+  let quar = '';
+  if (q && q.available) {
+    quar = q.active
+      ? `<div class="llm-row" style="color:var(--red)"><span class="llm-row-label">⛔ Internet quarantine ACTIVE</span> ` +
+        `<span style="font-size:11px">${Math.ceil((q.remaining || 0) / 60)} min left</span> <a href="#" id="q-release">release now</a></div>`
+      : `<div class="llm-row"><a href="#" id="q-start" style="font-size:11px">Quarantine internet…</a> ` +
+        `<span style="font-size:10px;color:var(--text-muted)">cuts outbound access, keeps LAN + SSH, auto-reverts</span></div>`;
+  }
+  $('threat-body').innerHTML = problems + learn + quar + blocks + rows;
+  const qs = $('q-start'), qr = $('q-release');
+  if (qs) qs.addEventListener('click', async ev => {
+    ev.preventDefault();
+    const mins = prompt('Cut this host\'s outbound internet for how many minutes (1-60)? LAN and SSH stay up and it auto-reverts.', '15');
+    if (!mins) return;
+    if (prompt('Type QUARANTINE to confirm') !== 'QUARANTINE') return;
+    const r = await actionFetch('/api/quarantine', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'QUARANTINE', minutes: parseInt(mins, 10) }) });
+    if (!r.ok) alert('Quarantine failed: ' + ((await r.json().catch(() => ({}))).error || r.statusText));
+    refreshThreats();
+  });
+  if (qr) qr.addEventListener('click', async ev => {
+    ev.preventDefault();
+    await actionFetch('/api/quarantine', { method: 'DELETE' });
+    refreshThreats();
+  });
+  $('threat-body').querySelectorAll('[data-unblock]').forEach(a => a.addEventListener('click', async ev => {
+    ev.preventDefault();
+    const ip = a.getAttribute('data-unblock');
+    if (!confirm('Unblock ' + ip + '?')) return;
+    const r = await actionFetch('/api/blocks/' + encodeURIComponent(ip), { method: 'DELETE' });
+    if (!r.ok) alert('Unblock failed: ' + r.statusText);
+    refreshThreats();
+  }));
 }
 
 // ── LLM Service Polling (separate endpoint, less frequent — involves
@@ -1567,6 +1742,14 @@ async function init() {
   // LLM probes make live HTTP calls to each candidate port, so poll less
   // frequently than the main status/tab refreshes.
   setInterval(refreshLLM, Math.max(REFRESH * 4, 8000));
+  refreshGPU();
+  setInterval(refreshGPU, Math.max(REFRESH * 2, 4000));
+  refreshThreats();
+  setInterval(refreshThreats, 15000);
+  refreshContainers();
+  setInterval(refreshContainers, 15000);
+  refreshHistory(true);
+  setInterval(() => refreshHistory(true), 60000);
   // Security scoring runs `ss` + connection scoring every cycle — same
   // cadence as LLM detection is a good balance of freshness vs. overhead.
   setInterval(refreshSecurity, Math.max(REFRESH * 4, 8000));

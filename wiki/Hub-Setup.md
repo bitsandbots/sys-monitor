@@ -108,11 +108,13 @@ Clicking any node card in the hub dashboard opens a detailed view with live data
 
 All actions (service control, process kill, power) are proxied through the hub to the target node.
 
+Power actions are stricter than the rest: they need `SYSHUB_TOKEN`, or a loopback caller when no token is set, because the hub forwards each node's stored token. If you reach the hub by a DNS name other than its hostname (for example `hub.lan`), add it to `SYSHUB_ALLOWED_HOSTS`, or the hub answers 400.
+
 ---
 
 ## Node Registry Persistence
 
-Registered nodes are stored in `hub_nodes.json` (default `./hub_nodes.json`, override with `SYSHUB_NODES_FILE`). The file is written on every add/remove/update. To reset the registry, delete the file and restart the hub.
+Registered nodes are stored in `hub_nodes.json` (default `./hub_nodes.json`, override with `SYSHUB_NODES_FILE`). The file is written on every add/remove/update, with mode `0600` and atomically, since it holds each node's bearer token; a failed save is printed to the hub's log. To reset the registry, delete the file and restart the hub.
 
 ---
 

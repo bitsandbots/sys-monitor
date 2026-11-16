@@ -21,12 +21,21 @@ Environment=SYSMONITOR_PORT=8585
 # Environment=SYSMONITOR_SERVICES=ssh,nginx,docker,ollama,mosquitto
 # Environment=SYSMONITOR_REFRESH=2
 
+# Metrics history DB lives in /var/lib/sys-monitor (sets STATE_DIRECTORY)
+StateDirectory=sys-monitor
+
 # Hardening
 ProtectSystem=strict
 ReadWritePaths=/opt/sys-monitor
 ProtectHome=true
+# NoNewPrivileges stays false: power/kill fall back to sudo on non-root installs.
 NoNewPrivileges=false
 PrivateTmp=true
+
+# Resource limits (protect small Pi boards from a leak or heavy scan)
+MemoryMax=256M
+TasksMax=128
+CPUQuota=50%
 
 [Install]
 WantedBy=multi-user.target

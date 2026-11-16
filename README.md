@@ -33,6 +33,18 @@ Built for [CoreConduit Consulting Services](https://coreconduit.com) infrastruct
 - The Fleet Hub aggregates security alerts across every node — a "🛡 N security alerts" badge appears on flagged nodes, plus a fleet-wide "Security Alerts" tile on the Hub dashboard
 - Degrades gracefully: if `hiddenscope_scanner.py` isn't installed, the Security tab reports "unavailable" instead of breaking anything else
 
+### GPU & I/O
+- **GPU** — NVIDIA utilisation, VRAM, temperature, power and which processes hold VRAM (Overview card, shown only when `nvidia-smi` works)
+- **Disk I/O** — per-disk throughput, IOPS and busy % from `/proc/diskstats`
+- **NIC errors** — `rx/tx_errors` and `rx/tx_dropped` per interface in `/api/network`
+
+### History
+- Samples CPU, temperature, memory, network, disk and GPU every 60s into SQLite (7-day retention), with a History card on the Overview tab. Auto-enabled under the shipped systemd unit (`StateDirectory=sys-monitor`).
+- **NVIDIA GPU hosts:** the shipped unit's `PrivateDevices=true` hides the GPU. Install `contrib/sys-monitor-gpu.conf` as a drop-in (instructions inside the file) for `/api/gpu`.
+
+### Discovery
+- The Fleet Hub finds nodes by `/24` scan **or mDNS** (`_sysmonitor._tcp`, Avahi). `install.sh` advertises each node automatically when `avahi-daemon` is present; the hub needs `avahi-utils` for mDNS lookups. See `docs/api.md` (Discovery).
+
 ### Service Control
 - View systemd service status (active/enabled state)
 - Start, stop, restart services
@@ -190,6 +202,17 @@ All configuration is via environment variables — no config files to manage.
 | `SYSMONITOR_TOKEN` | *(empty)* | Optional Bearer token for API auth |
 | `SYSMONITOR_SERVICES` | `ssh,nginx,docker,ollama,mosquitto,cron,avahi-daemon` | Comma-separated service whitelist |
 | `SYSMONITOR_REFRESH` | `2` | Frontend polling interval (seconds) |
+| `SYSMONITOR_ALERT_WEBHOOK_URL` | _(empty)_ | POST JSON alert events here (outbound alerting is off unless this or the ntfy URL is set) |
+| `SYSMONITOR_ALERT_NTFY_URL` | _(empty)_ | ntfy topic URL; alerts POST as plain text with Title/Priority headers |
+| `SYSMONITOR_ALERT_INTERVAL` | `30` | Seconds between alert evaluations (min 5) |
+| `SYSMONITOR_ALERT_CONFIRM` | `2` | Consecutive bad samples before an alert fires (debounce) |
+| `SYSMONITOR_ALERT_DISK_PERCENT` | `90` | Filesystem usage that triggers a disk alert |
+| `SYSMONITOR_ALERT_GPU_TEMP` | `83` | GPU temperature (°C) that triggers an alert |
+| `SYSMONITOR_ALERT_VRAM_PERCENT` | `95` | VRAM usage that triggers an alert |
+| `SYSMONITOR_HISTORY_DB` | _(auto)_ | SQLite file for metrics history. Defaults to `$STATE_DIRECTORY/metrics.db` under systemd (`/var/lib/sys-monitor`); history is off when neither is set |
+| `SYSMONITOR_HISTORY_INTERVAL` | `60` | Seconds between history samples (min 5) |
+| `SYSMONITOR_HISTORY_DAYS` | `7` | Retention in days; older samples are pruned hourly |
+| `SYSMONITOR_DOCKER_SOCKETS` | _(empty)_ | Comma-separated Docker socket paths to monitor read-only (e.g. `/var/run/docker.sock`). Off by default: the service user needs socket access, which is root-equivalent on rootful daemons |
 | `SYSMONITOR_SERVICES_FILE` | `./services.json` | Path to persist the service list across restarts |
 | `HIDDENSCOPE_MIN_SEVERITY` | `high` | Minimum finding severity that counts as "actionable" (drives the Security Alert card) — one of `info`, `low`, `medium`, `high`, `critical` |
 | `HIDDENSCOPE_SCAN_PATH` | *(empty)* | Server-side-only directory for the on-demand static scan; leave unset to disable `/api/security/scan` |
@@ -246,6 +269,12 @@ The web UI currently does not send auth headers — token auth is designed for A
 | `/api/services/config` | GET/POST | List / add a monitored service |
 | `/api/services/config/<svc>` | DELETE/PUT | Remove / rename a monitored service |
 | `/api/ports` | GET | Open TCP/UDP ports (well-known + registered range, 0-49151) |
+| `/healthz` | GET | Unauthenticated liveness + background-thread health (200/503) |
+| `/api/containers` | GET | Read-only Docker container state (opt-in via `SYSMONITOR_DOCKER_SOCKETS`) |
+| `/api/history` | GET | Recorded metric history (`?metric=&range=1h\|6h\|24h\|7d`) |
+| `/api/alerts` | GET | Firing outbound alerts + recent transition history |
+| `/api/gpu` | GET | NVIDIA GPU utilisation, VRAM, temperature, power and per-process VRAM (`available:false` without `nvidia-smi`) |
+| `/api/diskio` | GET | Per-disk read/write throughput, IOPS and busy % |
 | `/api/llm` | GET | Detected LLM-serving ports and, for each, whether it's serving a model and which one(s) |
 | `/api/security` | GET | hiddenscope security status — findings, actionable count, flagged listeners, summary |
 | `/api/security/allowlist` | GET/POST/DELETE | View / add / remove an allowlisted port, process, or network |

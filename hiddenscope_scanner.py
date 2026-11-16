@@ -773,6 +773,8 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
     ),
     # ── Obfuscated network targets (hide *where* a call goes) ────────────────
     # SysMonitor addition: not in upstream hiddenscope.
+    # Gaps are bounded ({0,300}/{0,500}): unbounded `[^)\n]*` made repeated
+    # `connect(` backtrack quadratically (160 KB ~ 8 s, a 10 MB file ~ hours).
     (
         re.compile(r"inet_ntoa\s*\(\s*(?:struct\s*\.\s*pack\s*\(|\w+\s*\.\s*to_bytes\s*\(|\d{7,10}\b|0x[0-9a-fA-F]{6,8}\b)"),
         "IP address built from packed/integer value",
@@ -795,14 +797,14 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
     ),
     (
         re.compile(
-            r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\([^)\n]*"
+            r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\([^)\n]{0,300}"
             r"(?:b64decode|base64_decode|atob|fromhex|unhexlify)\s*\("
         ),
         "Network call target decoded from base64",
         "high",
     ),
     (
-        re.compile(r"(?:bytes\s*\.\s*fromhex|unhexlify)\s*\([^)\n]*\)\s*\.\s*decode"),
+        re.compile(r"(?:bytes\s*\.\s*fromhex|unhexlify)\s*\([^)\n]{0,300}\)\s*\.\s*decode"),
         "String decoded from hex",
         "medium",
     ),
@@ -812,7 +814,7 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
         "medium",
     ),
     (
-        re.compile(r"codecs\s*\.\s*decode\s*\([^)\n]*rot_?13"),
+        re.compile(r"codecs\s*\.\s*decode\s*\([^)\n]{0,300}rot_?13"),
         "String decoded with rot13",
         "medium",
     ),
@@ -820,8 +822,8 @@ SOURCE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
         # Decoded value assigned first, then passed as a network target within
         # a few lines (defeats the single-expression rule above).
         re.compile(
-            r"\b(\w+)\s*=[^\n]*(?:b64decode|atob|fromhex|unhexlify)\s*\([^\n]*\n"
-            r"(?:[^\n]*\n){0,8}?[^\n]*"
+            r"\b(\w+)\s*=[^\n]{0,500}(?:b64decode|atob|fromhex|unhexlify)\s*\([^\n]{0,500}\n"
+            r"(?:[^\n]{0,500}\n){0,8}?[^\n]{0,500}"
             r"(?:connect|create_connection|urlopen|get|post|request|fetch)\s*\(\s*\1\b"
         ),
         "Network call target is a decoded variable",
