@@ -60,3 +60,31 @@ def test_test_path_downgrades_one_level(tmp_path):
     f.write_text("ipaddress.ip_address(3232235777)\n")
     hit = next(x for x in hs.scan_file(f) if x.description == "IP address from integer literal")
     assert hit.severity == "medium"
+
+
+# ── regex blowup: crafted files must not stall a scan ──────────────────────
+
+HOSTILE = [
+    "connect(" * 20_000,
+    "unhexlify(" * 16_000,
+    "codecs.decode(" * 12_000,
+    "a=" * 20_000,
+]
+
+
+@pytest.mark.parametrize("body", HOSTILE, ids=["connect", "unhexlify", "codecs", "assign"])
+def test_hostile_file_scans_quickly(tmp_path, body):
+    import time
+
+    f = tmp_path / "HARNESS_hostile.py"
+    f.write_text(body)
+    start = time.perf_counter()
+    hs.scan_file(f)
+    assert time.perf_counter() - start < 1.5
+
+
+def test_decoded_call_within_bound_still_detected(tmp_path):
+    f = tmp_path / "HARNESS_gap.py"
+    f.write_text("requests.get(" + "x, " * 40 + "base64.b64decode(CFG))\n")  # ~120-char gap
+    descs = {x.description for x in hs.scan_file(f)}
+    assert "Network call target decoded from base64" in descs
