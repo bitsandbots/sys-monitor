@@ -11,7 +11,8 @@
 set -euo pipefail
 
 REPO="https://github.com/bitsandbots/sys-monitor.wiki.git"
-WIKI_DIR="/tmp/sys-monitor-wiki-push"
+WIKI_DIR="$(mktemp -d /tmp/sys-monitor-wiki.XXXXXX)"
+trap 'rm -rf "$WIKI_DIR"' EXIT
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 RED='\033[0;31m'; GRN='\033[0;32m'; BLU='\033[0;34m'; NC='\033[0m'
@@ -25,7 +26,6 @@ PAGES_DIR="$SCRIPT_DIR/wiki"
 [[ -d "$PAGES_DIR" ]] || die "wiki/ directory not found next to push-wiki.sh"
 
 info "Cloning wiki repo..."
-rm -rf "$WIKI_DIR"
 git clone "$REPO" "$WIKI_DIR" || die "Could not clone wiki. Did you create the first page at https://github.com/bitsandbots/sys-monitor/wiki/_new ?"
 
 info "Copying pages..."

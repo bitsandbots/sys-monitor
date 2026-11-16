@@ -789,24 +789,33 @@ def read_journal_sshd(
         List of LogEvent (oldest first). Empty if journalctl is unavailable or
         the service user lacks journal access.
     """
-    since = "-30d" if backfill else "-1h"
-    cmd = [
-        "journalctl",
-        "-t",
-        "sshd",
-        "-t",
-        "sshd-session",
-        "-o",
-        "json",
-        "--no-pager",
-        f"--since={since}",
-        f"--cursor-file={cursor_file}",
-    ]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError) as exc:
-        if errors is not None:
-            errors.append(f"journalctl failed: {exc}")
+    # A huge 30-day backfill can exceed the timeout every run and never finish
+    # (the cursor only advances on completion), so retry once with a short window.
+    res = None
+    for since in ("-30d", "-1d") if backfill else ("-1h",):
+        cmd = [
+            "journalctl",
+            "-t",
+            "sshd",
+            "-t",
+            "sshd-session",
+            "-o",
+            "json",
+            "--no-pager",
+            f"--since={since}",
+            f"--cursor-file={cursor_file}",
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            break
+        except subprocess.TimeoutExpired:
+            if errors is not None:
+                errors.append(f"journalctl timed out after {timeout}s reading {since}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            if errors is not None:
+                errors.append(f"journalctl failed: {exc}")
+            return []
+    if res is None:
         return []
     if errors is not None and "insufficient permissions" in res.stderr.lower():
         errors.append(
@@ -843,6 +852,7 @@ class FileTailer:
         self._inode: int | None = None
         self._pos = 0
         self._head = b""
+        self._skip_to_eol = False  # discarding the rest of an oversized line
 
     def _head_changed(self, fh) -> bool:
         fh.seek(0)
@@ -871,14 +881,28 @@ class FileTailer:
                 rotated = True
             if rotated:
                 self._inode, self._pos = st.st_ino, 0
+                self._skip_to_eol = False
                 fh.seek(0)
                 self._head = fh.read(self._HEAD)
             if st.st_size == self._pos:
                 return []
             fh.seek(self._pos)
             data = fh.read(max_bytes)
+        if self._skip_to_eol:
+            nl = data.find(b"\n")
+            if nl < 0:
+                self._pos += len(data)
+                return []
+            self._pos += nl + 1
+            data = data[nl + 1 :]
+            self._skip_to_eol = False
         end = data.rfind(b"\n")
         if end < 0:
+            if len(data) >= max_bytes:
+                # One line longer than the read buffer would stall this log
+                # forever: drop it (and the rest of it on the next reads).
+                self._pos += len(data)
+                self._skip_to_eol = True
             return []
         self._pos += end + 1
         return data[: end + 1].decode("utf-8", "replace").splitlines()

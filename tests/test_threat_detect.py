@@ -488,3 +488,42 @@ def test_detectors_still_fire_with_capped_windows():
     for i in range(10):
         found += eng.ingest(http(status=404, path=f"/HARNESS_{i}", ts=T0 + i))
     assert any(f.detector == "web_scan" for f in found)
+
+
+# ── tailer: oversized line must not stall the log ───────────────────────
+
+
+def test_tailer_skips_a_line_longer_than_the_read_buffer(tmp_path):
+    p = tmp_path / "HARNESS_access.log"
+    p.write_text("start\n")
+    t = td.FileTailer(str(p))
+    assert t.read_new(max_bytes=1000) == []  # first open: positioned at EOF
+    with open(p, "a") as fh:
+        fh.write("x" * 3500 + "\n" + "good-1\n" + "good-2\n")
+    lines = []
+    for _ in range(12):
+        lines += t.read_new(max_bytes=1000)
+    assert lines == ["good-1", "good-2"]
+
+
+# ── journal backfill: timeout retries with a shorter window ──────────────
+
+
+def test_journal_backfill_timeout_retries_with_short_window(monkeypatch, tmp_path):
+    import subprocess
+    from types import SimpleNamespace
+
+    seen = []
+
+    def fake_run(cmd, **kw):
+        since = next(a for a in cmd if a.startswith("--since="))
+        seen.append(since)
+        if since == "--since=-30d":
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(td.subprocess, "run", fake_run)
+    errors = []
+    td.read_journal_sshd(str(tmp_path / "HARNESS_cursor"), backfill=True, errors=errors)
+    assert seen == ["--since=-30d", "--since=-1d"]
+    assert any("timed out" in e for e in errors)

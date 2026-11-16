@@ -111,6 +111,13 @@ then `manual`, then `auto` only once the false-positive record is clean.
   warning at startup when the mode is `manual`/`auto` and both are empty. If a web
   server sits behind a proxy or CDN, the address in its access log is the
   proxy's, so allowlist the proxy ranges (or log the real client address).
+  If you restore the real address with nginx `real_ip_header`, trust it only from
+  your own proxies (`set_real_ip_from`): a header from an untrusted source lets a
+  client choose the address that appears first in the log, and so who gets blocked.
+  The detectors read the **first field** of each access-log line, so keep it
+  `$remote_addr`.
+- Search-engine crawlers and uptime checkers that hit many missing URLs can look
+  like a web scan. Allowlist the ones you rely on before leaving `dry-run`.
 - The root helper ignores environment overrides (`SYSMON_BLOCK_STATE`,
   `SYSMON_BLOCK_ALLOWLIST`, `SYSMON_BLOCK_SELF`, `SYSMON_QUARANTINE_STATE`) when
   it runs as root; they exist for the test suite only.
@@ -123,6 +130,10 @@ then `manual`, then `auto` only once the false-positive record is clean.
 - Every decision is stored in the `ip_blocks` table (audit trail) and the event log.
 - Blocks expire on their own; `sysmon-block flush` / `POST /api/blocks/flush` clears
   them all. Unblocking works in every mode.
+- Each source IP keeps at most its last 1000 events per detector window, so a flood
+  from one address costs bounded CPU and memory. A scanner that mixes more than 1000
+  clean requests into a minute can dilute the 404 count; it still trips the burst
+  detector (which is not auto-blocked).
 - Only established log evidence (completed sessions/requests) triggers blocks, never
   SYN/UDP, so a spoofed source address cannot get a legitimate IP banned.
 
