@@ -378,6 +378,55 @@ Now includes `temperature_status` and `power_status`:
 
 ---
 
+### IP blocker and outbound quarantine
+
+Modes, safety rules and setup are in [`threat-detection.md`](https://github.com/bitsandbots/sys-monitor/blob/main/docs/threat-detection.md#ip-blocker).
+Mutating routes (`POST /api/blocks`, `DELETE /api/blocks/<ip>`, `POST /api/blocks/flush`,
+`POST`/`DELETE /api/quarantine`) need the bearer token from **every** client, the
+`SYSMONITOR_LAN_NO_AUTH` bypass does not apply. With no `SYSMONITOR_TOKEN` set they accept
+loopback callers only (`403` otherwise). `SYSMONITOR_STRICT_ACTIONS=false` restores plain auth.
+They also honour `SYSMONITOR_CONFIG_TOKEN` (`X-Config-Token` header) when set. When threat
+detection is disabled they return `503`. Refusals are `400 {"success": false, "error": "..."}`.
+
+#### `GET /api/blocks`
+`{"enabled": bool, "mode": "off|dry-run|manual|auto", "active": [...], "history": [...]}`.
+`?limit=N` sizes `history` (default 50, clamped to 1-500; non-numeric values use the default).
+Each row: `id, ip, ts, ttl, expires, mode, source, detector, reason, status, removed_ts, removed_by`.
+When the blocker is unavailable: `{"enabled": false, "mode": "off", "active": [], "history": []}`.
+
+#### `POST /api/blocks`
+Body `{"ip": "...", "reason"?: "...", "ttl"?: seconds, "force"?: bool}`. Public IPs only.
+Without `ttl` the repeat-offender ladder applies (1 h, 24 h, 7 d). Success:
+`{"success": true, "id", "ip", "ttl", "expires"}`. `400` when the address is not blockable
+(LAN, loopback, allowlisted), the cap is hit, or the mode is `off`/`dry-run`.
+
+#### `DELETE /api/blocks/<ip>`
+Unblock one address, in every mode. `{"success": true, "ip": "..."}`.
+
+#### `POST /api/blocks/flush`
+Remove every block. `{"success": true, "removed": N}`.
+
+#### `POST /api/blocks/approve?ip=&exp=&sig=`
+One-tap approval from a notification. **Not behind the bearer token:** the HMAC signature
+(single IP, expiry `exp`, one-hour lifetime) is the credential. A bad or expired signature is
+`403` and counts toward the per-IP auth lockout (`429` while locked out). A bad `exp` is `400`.
+Success: `{"success": true, "id", "ip", "ttl", "expires"}`.
+
+#### `GET /api/quarantine`
+`{"available": bool, "active": bool, "until"?: ..., "remaining"?: seconds}`. `available` is
+`false` when the root helper is missing.
+
+#### `POST /api/quarantine`
+Cut outbound internet (LAN, loopback and SSH replies stay up). Body
+`{"confirm": "QUARANTINE", "minutes"?: 1-60}` (default 15). Auto-reverts. Success:
+`{"success": true, "active": true, "until": ..., "minutes": N}`. A missing or wrong `confirm`
+is `400`. A critical alert is sent first.
+
+#### `DELETE /api/quarantine`
+Restore outbound internet now. `{"success": true, "active": false}`.
+
+---
+
 ## Fleet Hub API — port 8686
 
 ### `GET /api/ping`
