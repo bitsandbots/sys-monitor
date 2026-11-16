@@ -299,6 +299,11 @@ class Thresholds:
     cooldown: float = 600.0
     odd_hour_min_logins: int = 10
     max_tracked_ips: int = 5000
+    # Per-key cap on retained events. Detectors rescan the whole window on every
+    # event, so an uncapped window made one flooding IP cost O(n^2) CPU (16k
+    # events ~ 17 s). Keep this >= 10x the largest per-window threshold
+    # (burst_requests, 100) or that detector can never trigger.
+    max_window_events: int = 1000
 
 
 class ThreatEngine:
@@ -336,7 +341,7 @@ class ThreatEngine:
         """Fetch/create a window deque, evicting the least-recently-used key."""
         q = table.get(key)
         if q is None:
-            q = table[key] = deque()
+            q = table[key] = deque(maxlen=self.t.max_window_events)
             while len(table) > self.t.max_tracked_ips:
                 table.popitem(last=False)
         else:

@@ -460,3 +460,31 @@ def test_tailer_survives_rotation_and_missing_file(tmp_path):
     p.unlink()
     p.write_text("fresh\n")  # new inode
     assert t.read_new() == ["fresh"]
+
+
+# ── per-IP window cap (flood resistance) ────────────────────────────────
+
+
+def test_flood_from_one_ip_is_bounded_in_memory_and_time():
+    import time
+
+    eng = td.ThreatEngine(learning=False)
+    start = time.perf_counter()
+    for i in range(6_000):
+        eng.ingest(http(ts=T0 + i * 0.001))
+    elapsed = time.perf_counter() - start
+    assert len(eng._http[PUB]) <= 1000  # deterministic: the window is capped
+    assert elapsed < 10.0, f"flood took {elapsed:.1f}s (sanity bound)"
+
+
+def test_detectors_still_fire_with_capped_windows():
+    eng = td.ThreatEngine(learning=False)
+    found = []
+    for i in range(300):
+        found += eng.ingest(http(ts=T0 + i * 0.01))
+    assert any(f.detector == "request_burst" for f in found)
+    eng = td.ThreatEngine(learning=False)
+    found = []
+    for i in range(10):
+        found += eng.ingest(http(status=404, path=f"/HARNESS_{i}", ts=T0 + i))
+    assert any(f.detector == "web_scan" for f in found)
