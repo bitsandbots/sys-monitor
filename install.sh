@@ -246,6 +246,11 @@ install_node() {
   # "unavailable" without it) but should always be installed alongside
   # sys_monitor.py when present in the source tree.
   [[ -f hiddenscope_scanner.py ]] && cp hiddenscope_scanner.py "$INSTALL_DIR/"
+  # ip_block.py + threat_detect.py are imported together by sys_monitor.py;
+  # without them the threat detector and IP blocker silently disable.
+  for mod in ip_block.py threat_detect.py; do
+    [[ -f "$mod" ]] && cp "$mod" "$INSTALL_DIR/"
+  done
   cp templates/index.html "$INSTALL_DIR/templates/"
   # Copy static files (fonts for offline capability)
   if [[ -d static ]]; then

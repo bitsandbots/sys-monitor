@@ -105,6 +105,8 @@ CHECKSUM_PATH="${DIST_DIR}/${ARCHIVE_NAME}.sha256"
 RELEASE_FILES=(
   sys_monitor.py
   hiddenscope_scanner.py
+  ip_block.py
+  threat_detect.py
   requirements.txt
   services.json
   templates/index.html
