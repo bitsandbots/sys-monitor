@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover — optional companion file
 
 app = Flask(__name__)
 
-VERSION = "2.5.1"
+VERSION = "2.6.0"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Configuration
