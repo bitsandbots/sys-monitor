@@ -42,7 +42,7 @@ _HUB_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _HUB_DIR / "static" if (_HUB_DIR / "static").is_dir() else _HUB_DIR.parent / "static"
 app = Flask(__name__, static_folder=str(_STATIC_DIR))
 
-VERSION = "2.5.1"
+VERSION = "2.6.0"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Configuration
