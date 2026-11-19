@@ -437,6 +437,7 @@ body {
     <button class="tab-btn" data-tab="processes"><span class="tab-icon">▤</span> Processes</button>
     <button class="tab-btn" data-tab="network"><span class="tab-icon">⇅</span> Network</button>
     <button class="tab-btn" data-tab="storage"><span class="tab-icon">▧</span> Storage</button>
+    <button class="tab-btn" data-tab="models"><span class="tab-icon">◈</span> Models</button>
     <button class="tab-btn" data-tab="system"><span class="tab-icon">⏻</span> System</button>
     <button class="tab-btn" data-tab="security"><span class="tab-icon">🛡</span> Security</button>
     <button class="tab-btn" data-tab="logs"><span class="tab-icon">☰</span> Logs</button>
@@ -589,6 +590,18 @@ body {
       <div id="storage-list"></div>
     </div>
 
+    <!-- ══ MODELS ══ -->
+    <div class="panel" id="panel-models">
+      <div class="card" style="--accent-color:var(--purple)">
+        <div class="card-hdr">Agent Wiring <span style="color:var(--text-muted);font-weight:400;font-size:10px">which CLI points at which model</span></div>
+        <div id="wiring-list"></div>
+      </div>
+      <div class="card" style="--accent-color:var(--blue)">
+        <div class="card-hdr">LLM Backends</div>
+        <div id="llm-list"></div>
+      </div>
+    </div>
+
     <!-- ══ SYSTEM ══ -->
     <div class="panel" id="panel-system">
       <div class="card" style="--accent-color:var(--green)">
@@ -693,6 +706,8 @@ body {
 // ════════════════════════════════════════════════════════════════════════
 const REFRESH = {{ config.refresh_interval * 1000 }};
 const MAX_H = 60;
+const AUTH_TOKEN = {{ config.auth_token|tojson }};
+const AUTH_HEADERS = AUTH_TOKEN ? { 'Authorization': 'Bearer ' + AUTH_TOKEN } : {};
 
 // ── State ──
 let cpuH = [], tempH = [], rxH = [], txH = [];
@@ -871,7 +886,7 @@ async function actionFetch(url, opts) {
 
 async function api(path) {
   try {
-    const r = await fetch('/api/' + path);
+    const r = await fetch('/api/' + path, { headers: AUTH_HEADERS });
     if (!r.ok) throw new Error(r.statusText);
     missedPolls = 0;
     setConnected(true);
@@ -884,13 +899,13 @@ async function api(path) {
 }
 async function apiPost(path) {
   try {
-    const r = await fetch('/api/' + path, { method: 'POST' });
+    const r = await fetch('/api/' + path, { method: 'POST', headers: AUTH_HEADERS });
     return await r.json();
   } catch (e) { return null; }
 }
 async function apiDelete(path) {
   try {
-    const r = await fetch('/api/' + path, { method: 'DELETE' });
+    const r = await fetch('/api/' + path, { method: 'DELETE', headers: AUTH_HEADERS });
     return await r.json();
   } catch (e) { return null; }
 }
@@ -1102,6 +1117,35 @@ async function refreshTab() {
           <div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);margin-top:2px">Free: ${fGB} GB · ${100-d.percent}%</div>
         </div>`;
       }).join('');
+    }
+  }
+
+  if (activeTab === 'models') {
+    const wiring = await api('agent-wiring');
+    if (wiring) {
+      $('wiring-list').innerHTML = !wiring.available
+        ? '<div style="color:var(--text-muted);font-size:11px">cc-configure-agent not found on this host — not a Tier P node</div>'
+        : !wiring.agents.length
+        ? '<div style="color:var(--text-muted);font-size:11px">no agentic CLIs configured</div>'
+        : wiring.agents.map(a => `<div class="card svc-item" style="--accent-color:${a.resolves?'var(--green)':'var(--border)'}">
+            <span class="svc-dot ${a.resolves?'on':'off'}"></span>
+            <div class="svc-info">
+              <div class="svc-name">${esc(a.agent)} <span style="color:var(--cyan);font-weight:400">${esc(a.configured)}</span></div>
+              <div class="svc-desc">${esc(a.note || (a.resolves ? 'resolving' : 'not resolving'))}</div>
+            </div>
+          </div>`).join('');
+    }
+    const llm = await api('llm');
+    if (llm) {
+      $('llm-list').innerHTML = !llm.length
+        ? '<div style="color:var(--text-muted);font-size:11px">no LLM ports detected</div>'
+        : llm.map(s => `<div class="card svc-item" style="--accent-color:${s.serving?'var(--green)':'var(--border)'}">
+            <span class="svc-dot ${s.serving?'on':'off'}"></span>
+            <div class="svc-info">
+              <div class="svc-name">${esc(s.label)} <span style="color:var(--text-muted);font-weight:400">:${s.port}</span></div>
+              <div class="svc-desc">${s.serving ? esc((s.models||[]).join(', ')) : 'not serving'}</div>
+            </div>
+          </div>`).join('');
     }
   }
 
@@ -1550,7 +1594,7 @@ async function svcAction(name, action) {
 async function apiJson(path, method, body) {
   try {
     const r = await fetch('/api/' + path, {
-      method, headers: { 'Content-Type': 'application/json' },
+      method, headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
       body: JSON.stringify(body),
     });
     return await r.json();
@@ -1612,7 +1656,7 @@ async function execRemoveService() {
   if (!name) return;
   hideModal();
   _pendingRemoveSvc = null;
-  const r = await fetch('/api/services/config/' + encodeURIComponent(name), { method: 'DELETE' });
+  const r = await fetch('/api/services/config/' + encodeURIComponent(name), { method: 'DELETE', headers: AUTH_HEADERS });
   const data = await r.json().catch(() => null);
   if (data && data.success) {
     toast(`Removed ${name}`, 'warning');
